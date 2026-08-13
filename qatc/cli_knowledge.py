@@ -156,6 +156,17 @@ def cmd_slot_set(args: argparse.Namespace, cfg: AppConfig) -> int:
 
 
 def cmd_slot_add(args: argparse.Namespace, cfg: AppConfig) -> int:
+    # `--family` 를 여기서 검증하는 이유: 통과시키면 되돌릴 수 없이 조용히 틀린다.
+    # 오타(`중단됨`)는 `tc plan` 에서 `FAMILY_META` 폴백을 타 의도한 INTERRUPT 대신
+    # HAPPY_PATH / Medium 이 배정되고, 빈 문자열은 어떤 계열도 만들지 못하면서
+    # 커버리지 분모(`total`)만 늘리는 "죽은 슬롯"이 된다. 둘 다 rc=0 이라
+    # 아무도 눈치채지 못한다.
+    # argparse `choices` 를 쓰지 않는 이유는 `tc add` 와 같다 (register() 주석 참조).
+    if args.family not in FAMILY_META:
+        _p(f"오류: 알 수 없는 계열 '{args.family}'. "
+           f"정의된 계열 중 하나를 쓰세요: {', '.join(sorted(FAMILY_META))}")
+        return 1
+
     store = resolve_store(cfg, args.game, args.content)
     try:
         store.add_slot(args.content, args.key, args.hint, args.family)

@@ -166,6 +166,63 @@ def test_add_slot_appends(cfg_env, capsys):
     assert data["total"] == 11
 
 
+def test_add_slot_rejects_unregistered_family(cfg_env, capsys):
+    """오타 계열은 `slot add` 에서 막는다.
+
+    `--family 중단됨`(등록된 `중단` 의 오타)이 통과하면 `tc plan` 이 그 계열을
+    계획하고 `FAMILY_META` 폴백으로 **의도한 INTERRUPT 대신 HAPPY_PATH / Medium
+    을 조용히 배정**한다. rc=0 이라 아무도 눈치채지 못한다.
+    """
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+    rc = main(["slot", "add", "파티편성", "네트워크",
+               "--hint", "통신이 끊기면", "--family", "중단됨"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "중단됨" in out
+    assert "중단" in out          # 유효한 계열 목록을 알려준다 (다음 조치)
+
+    # 거부됐으면 분모가 늘지 않아야 한다
+    main(["slot", "status", "파티편성", "--json"])
+    assert json.loads(capsys.readouterr().out)["total"] == 10
+
+
+def test_add_slot_rejects_empty_family(cfg_env, capsys):
+    """`--family ""` 는 어떤 계열도 만들지 못하는 죽은 슬롯을 만든다.
+
+    `tc plan` 의 skipped 에도 안 뜨고 (`tc_family` 가 비면 게이트가 양쪽에서
+    제외한다) `slot status` 의 `total` 분모만 늘린다 — 실측 10 → 11.
+    """
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+    rc = main(["slot", "add", "파티편성", "죽은슬롯", "--hint", "h", "--family", ""])
+    assert rc == 1
+    assert "정의된 계열" in capsys.readouterr().out   # 유효값을 알려준다
+
+    main(["slot", "status", "파티편성", "--json"])
+    assert json.loads(capsys.readouterr().out)["total"] == 10
+
+
+def test_added_interrupt_slot_plans_as_interrupt(cfg_env, capsys):
+    """`중단` 은 `slot add` 로 도달하라고 FAMILY_META 에 있는 계열이다.
+
+    검증을 넣으면서 이 경로가 막히면 안 된다 — 등록된 이름을 쓰면 폴백이 아니라
+    의도한 INTERRUPT 가 배정돼야 한다.
+    """
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    assert main(["slot", "add", "파티편성", "네트워크",
+                 "--hint", "통신이 끊기면", "--family", "중단"]) == 0
+    main(["slot", "set", "파티편성", "네트워크", "--status", "filled",
+          "--value", "전투 중 통신이 끊긴다"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    main(["tc", "plan", "파티편성", "--json"])
+    data = json.loads(capsys.readouterr().out)
+    row = {p["family"]: p for p in data["planned"]}["중단"]
+    assert row["kind"] == "중단"        # TCKind.INTERRUPT — 폴백이면 "정상" 이 된다
+    assert row["priority"] == "Medium"
+
+
 def test_game_is_inferred_when_only_one_db_has_the_content(cfg_env):
     main(["slot", "init", "파티편성", "--game", "starrail"])
     # --game 없이도 찾아낸다

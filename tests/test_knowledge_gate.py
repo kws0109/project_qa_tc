@@ -151,3 +151,19 @@ def test_first_filled_slot_wins_as_family_representative():
     planned, _ = plan_families(slots)
     rep = next(p for p in planned if p.family == "경계값")
     assert rep.slot_key == "constraints"
+
+
+def test_unregistered_family_falls_back_to_happy_path_medium():
+    """`FAMILY_META` 에 없는 계열의 폴백 튜플을 고정한다 (뮤테이션 M09).
+
+    `slot add --family` 검증이 생겨 CLI 로 새로 만들기는 어려워졌지만, 이 폴백은
+    여전히 도달 가능하다 — `plan_families` 는 순수 함수이고, 검증 이전에 만들어져
+    **이미 DB에 들어간** 미등록 계열 슬롯은 그대로 남는다. 폴백이 바뀌면 그런
+    슬롯에서 나오는 TC의 종류와 우선순위가 조용히 달라진다.
+    """
+    slots = [Slot("네트워크", "통신이 끊기면", "미등록계열",
+                  status=SlotStatus.FILLED, ord=0)]
+    planned, _ = plan_families(slots)
+    assert [p.family for p in planned] == ["미등록계열"]
+    assert planned[0].kind is TCKind.HAPPY_PATH
+    assert planned[0].priority is Priority.MEDIUM
