@@ -1575,6 +1575,20 @@ from .console import _p
 
 `cli.py` 의 나머지 코드는 그대로 `_p(...)` 를 부르므로 다른 수정은 필요 없다.
 
+이어서 `cli.py` 의 `main()` 에서 문자열 `SystemExit` 을 잡도록 고친다. `resolve_store()` 가
+안내 문구와 함께 `SystemExit` 을 던지는데, 지금의 `except SystemExit: raise` 는 그대로
+전파시켜 종료 코드도 1이 아니고 한글이 stderr 로 나가 Windows 코드페이지에서 깨진다.
+
+```python
+    except SystemExit as exc:
+        if isinstance(exc.code, str):
+            _p(f"오류: {exc.code}")
+            return 1
+        raise
+```
+
+argparse 가 던지는 `SystemExit(2)` 는 정수라 그대로 재전파된다.
+
 - [ ] **Step 4: 구현**
 
 `qatc/cli_knowledge.py`:
@@ -2314,7 +2328,8 @@ epilog 를 다음으로 교체한다:
         # ... 기존 record/analyze/name/review/run/list/icons/legacy-tc/export 등록 ...
 ```
 
-`main()` 을 다음으로 바꾼다:
+`main()` 의 `--legacy` 처리를 추가한다. 문자열 `SystemExit` 처리는 Task 6 에서 이미
+넣었으므로 그대로 두고 아래 형태가 되게 한다:
 
 ```python
 def main(argv: list[str] | None = None) -> int:
@@ -2341,7 +2356,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 ```
 
-> `SystemExit` 처리를 바꾼 이유: `resolve_store()` 가 안내 문자열과 함께 `SystemExit` 을 던지는데, 그대로 두면 argparse 스타일로 stderr에 나가고 종료 코드가 1이 아니다. 문자열 코드만 잡아 `_p` 로 내보내고 1을 돌려준다.
+> `SystemExit` 문자열 처리는 Task 6 에서 이미 들어갔다. 여기서는 `--legacy` 추출만 더한다.
 
 - [ ] **Step 5: 새 `export` 를 컨텐츠 기반으로 임시 연결**
 
