@@ -52,6 +52,19 @@ def resolve_store(cfg: AppConfig, game: str | None, content: str | None) -> Know
     return KnowledgeStore(hits[0]).open()
 
 
+def _no_content(content: str) -> str:
+    """"그 컨텐츠가 없다"를 알리는 문구. 다섯 명령이 같이 쓴다.
+
+    이 모듈의 계약은 맨 위 도크스트링에 있다 — *"오류는 다음 조치를 항상 함께
+    알린다."* 그런데 같은 조건을 `slot status` 만 지키고 `tc plan`/`tc add`/
+    `tc list`/`export` 는 "없습니다."에서 끝냈다. 이 출력의 1차 독자는 인터뷰를
+    진행하는 **모델**이라, 다음 조치가 없으면 무엇을 할지 추측하게 되고 그게
+    CLI 를 결정론적 진실 원천으로 쓰는 이유를 갉아먹는다. 문구를 한 곳에 두어
+    다음에 명령이 늘어도 갈라지지 않게 한다.
+    """
+    return f"컨텐츠 '{content}'가 없습니다. 'qatc slot init'을 먼저 실행하세요."
+
+
 def _status_payload(store: KnowledgeStore, content: str) -> dict:
     slots = store.slots(content)
     planned, skipped = plan_families(slots)
@@ -80,7 +93,7 @@ def cmd_slot_status(args: argparse.Namespace, cfg: AppConfig) -> int:
     store = resolve_store(cfg, args.game, args.content)
     try:
         if store.get_content(args.content) is None:
-            _p(f"컨텐츠 '{args.content}'가 없습니다. 'qatc slot init'을 먼저 실행하세요.")
+            _p(_no_content(args.content))
             return 1
         payload = _status_payload(store, args.content)
     finally:
@@ -166,7 +179,7 @@ def cmd_tc_plan(args: argparse.Namespace, cfg: AppConfig) -> int:
     store = resolve_store(cfg, args.game, args.content)
     try:
         if store.get_content(args.content) is None:
-            _p(f"컨텐츠 '{args.content}'가 없습니다.")
+            _p(_no_content(args.content))
             return 1
         planned, skipped = plan_families(store.slots(args.content))
     finally:
@@ -272,7 +285,7 @@ def cmd_tc_add(args: argparse.Namespace, cfg: AppConfig) -> int:
     try:
         slots = store.slots(args.content)
         if not slots:
-            _p(f"컨텐츠 '{args.content}'가 없습니다.")
+            _p(_no_content(args.content))
             return 1
         try:
             plan = validate_family(args.family, slots)
@@ -314,7 +327,7 @@ def cmd_tc_list(args: argparse.Namespace, cfg: AppConfig) -> int:
     store = resolve_store(cfg, args.game, args.content)
     try:
         if store.get_content(args.content) is None:
-            _p(f"컨텐츠 '{args.content}'가 없습니다.")
+            _p(_no_content(args.content))
             return 1
         cases = store.testcases(args.content)
         _, skipped = plan_families(store.slots(args.content))
@@ -343,7 +356,10 @@ def cmd_tc_list(args: argparse.Namespace, cfg: AppConfig) -> int:
 def cmd_knowledge(args: argparse.Namespace, cfg: AppConfig) -> int:
     path = cfg.knowledge_path / f"{args.game}.db"
     if not path.exists():
-        _p(f"'{args.game}' 지식 DB가 없습니다 ({path}).")
+        # 조건이 다르다 (컨텐츠가 아니라 게임 DB) 라 문구를 공유하지 않지만,
+        # 계약("다음 조치를 함께 알린다")은 같이 지킨다.
+        _p(f"'{args.game}' 지식 DB가 없습니다 ({path}). "
+           f"'qatc slot init <컨텐츠> --game {args.game}'을 먼저 실행하세요.")
         return 1
 
     rows = []
@@ -381,7 +397,7 @@ def cmd_export(args: argparse.Namespace, cfg: AppConfig) -> int:
     store = resolve_store(cfg, args.game, args.content)
     try:
         if store.get_content(args.content) is None:
-            _p(f"컨텐츠 '{args.content}'가 없습니다.")
+            _p(_no_content(args.content))
             return 1
         cases = store.testcases(args.content)
         _, skipped = plan_families(store.slots(args.content))
