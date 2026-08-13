@@ -116,13 +116,25 @@ def cmd_slot_init(args: argparse.Namespace, cfg: AppConfig) -> int:
 
 
 def cmd_slot_set(args: argparse.Namespace, cfg: AppConfig) -> int:
+    status = SlotStatus(args.status)
+    value = args.value or ""
+
+    # 빈 근거를 FILLED 로 받으면 게이트가 그것을 근거로 인정한다. DB를 열기 전에
+    # 막고, 다음 조치(모른다 / 해당 없음)를 함께 알린다 — 이 명령의 호출자는
+    # 인터뷰를 진행하는 모델이라 "안 됩니다"만으로는 무엇을 할지 모른다.
+    if status is SlotStatus.FILLED and not value.strip():
+        _p("오류: --status filled 에는 --value 가 필요합니다. "
+           "내용을 모르면 --status unknown, 해당 없으면 --status na 를 쓰세요.")
+        return 1
+
     store = resolve_store(cfg, args.game, args.content)
     try:
-        slot = store.set_slot(
-            args.content, args.key, SlotStatus(args.status), args.value or ""
-        )
+        slot = store.set_slot(args.content, args.key, status, value)
     except KeyError as exc:
         _p(f"오류: {exc.args[0]}")
+        return 1
+    except ValueError as exc:
+        _p(f"오류: {exc}")
         return 1
     finally:
         store.close()

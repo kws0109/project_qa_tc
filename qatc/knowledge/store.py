@@ -169,7 +169,18 @@ class KnowledgeStore:
 
         없는 키는 **조용히 무시하지 않는다.** 성공한 척하면 사용자 답변이 증발한
         것처럼 보이고, 인터뷰가 끝날 때까지 아무도 눈치채지 못한다.
+
+        `FILLED` 에 빈 값도 **조용히 받지 않는다.** 게이트(:func:`plan_families`)는
+        `status is FILLED` 만 보고 계열을 계획하므로, 값이 빈 FILLED 슬롯은
+        "아무 내용도 없는 근거" 로 인정돼 근거 없는 TC를 만든다. CLI 에도 같은
+        검사가 있지만 게이트와 같은 계층인 여기서도 막아야 CLI 밖 호출자가
+        우회하지 못한다.
         """
+        if status is SlotStatus.FILLED and not value.strip():
+            raise ValueError(
+                f"'{key}' 슬롯을 filled 로 기록하려면 값이 필요합니다. "
+                f"내용을 모르면 SlotStatus.UNKNOWN, 해당 없으면 SlotStatus.NA 를 쓰세요."
+            )
         current = self.slots(name)
         if not current:
             raise KeyError(f"컨텐츠 '{name}'가 없습니다. 먼저 slot init을 실행하세요.")

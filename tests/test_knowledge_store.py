@@ -98,3 +98,39 @@ def test_reopen_keeps_data(tmp_path):
     with KnowledgeStore(p) as s:
         got = {x.key: x for x in s.slots("파티편성")}["cost"]
         assert got.status is SlotStatus.NA
+
+
+def test_set_slot_rejects_filled_with_empty_value(store):
+    """FILLED 는 근거다. 빈 근거는 근거가 아니다.
+
+    게이트(`plan_families`)는 `status is FILLED` 만 보고 계열을 계획하므로,
+    값이 빈 FILLED 슬롯이 통과하면 "근거 없는 TC" 가 실제로 만들어진다.
+    CLI 밖 호출자(게이트와 같은 계층)도 막아야 하므로 저장소에서 검증한다.
+    """
+    store.init_content("파티편성", game="starrail", types=[])
+    with pytest.raises(ValueError) as exc:
+        store.set_slot("파티편성", "core_action", SlotStatus.FILLED, "")
+    assert "core_action" in str(exc.value)
+    # 거부됐으면 상태가 그대로여야 한다
+    got = {s.key: s for s in store.slots("파티편성")}["core_action"]
+    assert got.status is SlotStatus.EMPTY
+
+
+def test_set_slot_rejects_filled_with_whitespace_only_value(store):
+    """공백만 있는 값도 근거가 아니다 — `--value "  "` 로 우회되면 안 된다."""
+    store.init_content("파티편성", game="starrail", types=[])
+    with pytest.raises(ValueError):
+        store.set_slot("파티편성", "core_action", SlotStatus.FILLED, "   \t ")
+    got = {s.key: s for s in store.slots("파티편성")}["core_action"]
+    assert got.status is SlotStatus.EMPTY
+
+
+def test_set_slot_allows_empty_value_for_non_filled_statuses(store):
+    """UNKNOWN·NA·EMPTY 는 값이 없는 것이 정상이다.
+
+    "모른다"·"해당 없음" 은 근거가 아니라 근거의 부재를 기록하는 상태다.
+    """
+    store.init_content("파티편성", game="starrail", types=[])
+    for status in (SlotStatus.UNKNOWN, SlotStatus.NA, SlotStatus.EMPTY):
+        slot = store.set_slot("파티편성", "core_action", status, "")
+        assert slot.status is status

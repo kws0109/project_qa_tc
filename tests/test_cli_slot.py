@@ -76,6 +76,53 @@ def test_set_unknown_key_fails_and_lists_keys(cfg_env, capsys):
     assert "core_action" in out
 
 
+def test_set_filled_without_value_is_rejected(cfg_env, capsys):
+    """`--status filled` 를 `--value` 없이 부르면 거부해야 한다.
+
+    게이트는 `status is FILLED` 만 보고 계열을 계획한다. 빈 근거가 FILLED 로
+    통과하면 "근거 없는 TC는 만들어지지 않는다" 가 플래그 하나 빠뜨리는 것만으로
+    무너진다 — 인터뷰를 진행하는 모델이 가장 하기 쉬운 실수다.
+    """
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+    rc = main(["slot", "set", "파티편성", "core_action", "--status", "filled"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "--value" in out
+    # 다음 조치를 알린다 — 모르면 unknown, 해당 없으면 na
+    assert "--status unknown" in out
+    assert "--status na" in out
+
+    # 거부됐으면 슬롯이 실제로 안 바뀌어야 한다
+    main(["slot", "status", "파티편성", "--json"])
+    data = json.loads(capsys.readouterr().out)
+    assert data["filled"] == 0
+    assert any(s["key"] == "core_action" for s in data["open"])
+
+
+def test_set_filled_with_whitespace_value_is_rejected(cfg_env, capsys):
+    """공백만 있는 `--value` 도 근거가 아니다."""
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+    rc = main(["slot", "set", "파티편성", "core_action",
+               "--status", "filled", "--value", "   "])
+    assert rc == 1
+    assert "--value" in capsys.readouterr().out
+
+    main(["slot", "status", "파티편성", "--json"])
+    assert json.loads(capsys.readouterr().out)["filled"] == 0
+
+
+def test_unknown_na_empty_still_accept_missing_value(cfg_env, capsys):
+    """"모른다"·"해당 없음"·되돌리기는 값이 없는 것이 정상 사용법이다.
+
+    C1 검증이 이 셋까지 막으면 인터뷰가 진행되지 않는다.
+    """
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    for status in ("unknown", "na", "empty"):
+        assert main(["slot", "set", "파티편성", "cost", "--status", status]) == 0, status
+
+
 def test_set_on_missing_content_fails(cfg_env, capsys):
     main(["slot", "init", "다른컨텐츠", "--game", "starrail"])
     capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
