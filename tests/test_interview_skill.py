@@ -59,14 +59,42 @@ def test_every_qatc_command_in_skill_is_registered():
             assert sub in nested, f"등록되지 않은 하위명령: qatc {cmd} {sub}"
 
 
+def _executed_invocations(text: str) -> list[str]:
+    """SKILL.md 에서 실제로 실행되는 명령줄만 골라낸다.
+
+    구분 규칙: 실행 가능한 명령줄은 항상 allowlist 접두사와 같은 형태인
+    `.venv/Scripts/qatc.exe ...` 로 시작한다 (예: 3단계의 코드펜스 안 호출들).
+    반면 프로즈에서 명령을 언급할 때는 실행 파일 경로 없이 바로 `qatc ...`
+    로 쓴다 (예: "절대 규칙"의 `qatc slot status` 문구, 서두의 `qatc tc plan`).
+    후자는 셸에서 실행되지 않으므로 allowlist 매칭 대상이 아니다. 이 두
+    형태의 어휘적 차이(경로 접두사 유무)로 실행줄만 골라낸다.
+    """
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().startswith(".venv/Scripts/qatc.exe")
+    ]
+
+
 def test_skill_uses_allowlisted_executable_form():
     """`.claude/settings.json` 의 권한 규칙은 명령 접두사로 매칭된다.
 
     스킬이 쓰는 호출 형태와 allowlist 접두사가 어긋나면 매 슬롯 기록마다
-    승인 창이 떠서 인터뷰가 성립하지 않는다.
+    승인 창이 떠서 인터뷰가 성립하지 않는다. 일부 명령(예: slot, tc)만
+    하드코딩해서 확인하면 새로 추가된 호출(예: export)이 allowlist에서
+    빠져도 잡아내지 못한다 — 스킬에 등장하는 실행 가능한 호출을 전부 뽑아
+    하나도 빠짐없이 allowlist 접두사와 대조한다.
     """
+    text = SKILL.read_text(encoding="utf-8")
     settings = Path(__file__).resolve().parents[1] / ".claude" / "settings.json"
     allow = json.loads(settings.read_text(encoding="utf-8"))["permissions"]["allow"]
     prefixes = [a[len("Bash("):-len(" *)")] for a in allow if a.startswith("Bash(")]
-    assert any("qatc.exe slot" in p for p in prefixes)
-    assert any("qatc.exe tc" in p for p in prefixes)
+
+    invocations = _executed_invocations(text)
+    assert invocations, "스킬에 실행 가능한 qatc 호출이 하나도 없습니다"
+
+    for inv in invocations:
+        assert any(inv.startswith(p) for p in prefixes), (
+            f"allowlist에 없는 호출: {inv!r} — "
+            f".claude/settings.json 의 permissions.allow 에 접두사를 추가하세요"
+        )
