@@ -108,3 +108,23 @@ def test_ambiguous_content_across_games_fails(cfg_env, capsys):
     assert rc == 1
     out = capsys.readouterr().out
     assert "--game" in out
+
+
+def test_int_coded_system_exit_still_propagates(cfg_env, monkeypatch):
+    """main() 의 SystemExit 가드는 문자열 코드만 rc=1 로 바꿔야 한다.
+
+    문자열 케이스는 test_set_on_missing_content_fails /
+    test_ambiguous_content_across_games_fails 가 이미 고정한다 (resolve_store
+    가 안내 문구와 함께 SystemExit 를 던지고, main() 이 그걸 표준출력 + rc=1 로
+    바꾼다). 여기서는 반대쪽 경계 — 정수 코드는 그대로 통과해야 한다 — 를 고정한다.
+    가드를 `except SystemExit: return 1` 처럼 뭉뚱그리면 이 테스트가 깨진다.
+    """
+    import qatc.cli_knowledge as ck
+
+    def _raise_int_exit(args, cfg):
+        raise SystemExit(3)
+
+    monkeypatch.setattr(ck, "cmd_slot_status", _raise_int_exit)
+    with pytest.raises(SystemExit) as exc_info:
+        main(["slot", "status", "아무거나"])
+    assert exc_info.value.code == 3
