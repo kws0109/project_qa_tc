@@ -1,4 +1,10 @@
-from qatc.knowledge.models import Content, Slot, SlotSpec, SlotStatus
+from qatc.knowledge.models import (
+    SLOT_STATUS_LABEL,
+    Content,
+    Slot,
+    SlotSpec,
+    SlotStatus,
+)
 from qatc.models import TCOrigin
 
 
@@ -38,3 +44,23 @@ def test_slot_specs_with_same_key_differ_by_hint():
 def test_content_holds_types():
     c = Content(name="파티편성", game="starrail", types=["편성"])
     assert c.types == ["편성"]
+
+
+def test_every_slot_status_has_a_label():
+    """`SlotStatus` 멤버가 늘면 라벨도 같이 늘어야 한다.
+
+    예전에는 이 매핑이 4벌(gate 거부 메시지 · tc plan · tc list · tc_excel)로
+    흩어져 있었고, **넷 다 새 멤버에서 `KeyError` 로 죽었다.** 게다가 상태를
+    표시하는 자리마다 문구가 달라 한 세션 안에서 같은 상태가 세 이름으로 보였다.
+    이제 한 곳이므로, 여기서 실패하면 표시하는 모든 자리가 같이 막힌다 —
+    사용자가 export 도중에 KeyError 를 보는 것보다 테스트가 먼저 죽는 게 낫다.
+    """
+    for status in SlotStatus:
+        assert status in SLOT_STATUS_LABEL, status
+        assert SLOT_STATUS_LABEL[status].strip(), status
+
+
+def test_slot_status_labels_are_distinct():
+    """상태마다 다른 문구여야 한다 — 사유가 겹치면 거부 메시지가 이유를 못 준다."""
+    labels = list(SLOT_STATUS_LABEL.values())
+    assert len(set(labels)) == len(labels)

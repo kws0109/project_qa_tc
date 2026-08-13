@@ -19,7 +19,7 @@ from pathlib import Path
 from .config import AppConfig
 from .console import _p
 from .knowledge.gate import FAMILY_META, plan_families, validate_family
-from .knowledge.models import SlotStatus
+from .knowledge.models import SLOT_STATUS_LABEL, SlotStatus
 from .knowledge.slots import KNOWN_TYPES
 from .knowledge.store import KnowledgeStore
 from .models import Priority, TCOrigin, TestCase
@@ -206,9 +206,8 @@ def cmd_tc_plan(args: argparse.Namespace, cfg: AppConfig) -> int:
         _p(f"  {p.family:<16} {p.slot_key:<16} {p.kind.value} / {p.priority.value}")
     if skipped:
         _p("\n제외됨:")
-        reason = {"empty": "슬롯 비어 있음", "unknown": "사용자가 모름", "na": "해당 없음"}
         for s in skipped:
-            _p(f"  {s.family:<16} {s.slot_key:<16} {reason[s.status.value]}")
+            _p(f"  {s.family:<16} {s.slot_key:<16} {SLOT_STATUS_LABEL[s.status]}")
     return 0
 
 
@@ -345,10 +344,9 @@ def cmd_tc_list(args: argparse.Namespace, cfg: AppConfig) -> int:
 
     if skipped:
         _p("\n⚠ 다음 항목이 미확인이라 해당 TC가 없습니다")
-        reason = {"empty": "비어있음", "unknown": "사용자가 모름", "na": "해당 없음"}
         for s in skipped:
             _p(f"   {s.slot_key:<16} ({s.prompt_hint}) → {s.family} TC 없음  "
-               f"[{reason[s.status.value]}]")
+               f"[{SLOT_STATUS_LABEL[s.status]}]")
         _p("\n   이어서 채우려면 Claude Code에서 인터뷰를 재개하세요.")
     return 0
 

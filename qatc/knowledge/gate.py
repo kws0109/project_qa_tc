@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from ..models import Priority, TCKind
-from .models import Slot, SlotStatus
+from .models import SLOT_STATUS_LABEL, Slot, SlotStatus
 
 #: 계열 → (TC 종류, 기본 우선순위).
 #: INTERRUPT 를 쓰는 계열이 기본에 없는 이유: 진술에서 통신 끊김·강제 종료가
@@ -100,11 +100,7 @@ def validate_family(family: str, slots: Sequence[Slot]) -> FamilyPlan:
 
     for s in skipped:
         if s.family == family:
-            reason = {
-                SlotStatus.EMPTY: "슬롯이 비어 있음",
-                SlotStatus.UNKNOWN: "사용자가 모른다고 답함",
-                SlotStatus.NA: "해당 없음으로 표시됨",
-            }[s.status]
+            reason = SLOT_STATUS_LABEL[s.status]
             raise ValueError(
                 f"'{family}'은(는) 생성 대상이 아닙니다 "
                 f"({s.slot_key} 슬롯: {reason}). "
