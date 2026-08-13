@@ -39,7 +39,6 @@ _ORIGIN_FILL = {
 }
 
 
-
 def clean_cell(value: str) -> str:
     """셀에 넣어도 안전한 문자열로 만든다."""
     return _ILLEGAL.sub("", value)
