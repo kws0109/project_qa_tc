@@ -68,8 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    raw = list(sys.argv[1:] if argv is None else argv)
-    args = build_parser().parse_args(raw)
+    args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
     cfg = AppConfig.load()
     try:
         return args.func(args, cfg)

@@ -1,18 +1,18 @@
-"""게임 프로파일 — 게임 식별 정보와 LLM 컨텍스트.
+"""게임 프로파일 — 게임 식별 정보.
 
 지식 저장소는 게임 키(예: "starrail")로 나뉘고, 그 정체성이 여기 있다.
-``qatc config`` 가 사용 가능한 프로파일 목록을 보여줄 때 이 모듈을 쓴다.
+``qatc config`` 가 사용 가능한 프로파일 목록을 보여줄 때 이 모듈을 쓴다
+(``key`` 와 ``name`` 만 읽는다).
 
-창 탐색·캡처 ROI·무시 영역 등은 녹화 파이프라인 전용 필드였으나 파이프라인
-자체가 삭제되어 더 이상 코드에서 읽지 않는다. ``profiles/*.yaml`` 파일에는
-과거 값이 그대로 남아 있을 수 있지만(예: ``capture_roi``, ``static_ignore``),
-아래 로더는 그 키들을 무시한다.
+창 탐색·캡처 ROI·무시 영역·입력 해석 규칙 등은 녹화 파이프라인 전용
+필드였으나 파이프라인 자체가 삭제되어 더 이상 코드에서 읽지 않는다.
+``profiles/*.yaml`` 파일에는 과거 값이 그대로 남아 있을 수 있지만, 아래
+로더는 ``name`` 외의 키를 읽지 않는다.
 """
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,109 +20,13 @@ import yaml
 
 
 @dataclass
-class InputRules:
-    """게임별 입력 해석 규칙.
-
-    같은 키 입력이라도 게임마다 의미가 다르다. 스타레일 필드에서 Alt는 마우스
-    포인터를 활성화하는 **수단**이지 게임 동작이 아니고, WASD는 이동이라 QA
-    테스트케이스의 대상이 아니다. 이걸 구분하지 않으면 TC에 "[W] 키 입력"이
-    수십 줄 쌓인다.
-    """
-
-    #: 홀드해야 마우스 포인터가 활성화되는 키 (예: 스타레일 필드의 ``alt``).
-    #: **이 키를 안 누른 상태의 클릭 좌표는 신뢰할 수 없다** — 포인터가 화면
-    #: 중앙에 잠겨 있어 항상 (0.5, 0.5)로 기록되기 때문이다.
-    pointer_modifier: str = ""
-    #: 스텝으로 만들지 않을 키 (이동·카메라 등). 기록 자체를 하지 않는다.
-    ignore_keys: frozenset[str] = frozenset()
-    #: 포인터 수식키를 누르지 않은 클릭을 버릴지. 좌표가 무의미하기 때문이다.
-    #: 다만 메뉴 화면에서는 수식키 없이도 포인터가 활성화되므로, 기본값은
-    #: 버리지 않고 "좌표 불확실" 표시만 남기는 쪽이다.
-    drop_unmodified_clicks: bool = False
-
-    def is_ignored_key(self, key: str) -> bool:
-        return (key or "").lower() in self.ignore_keys
-
-    def is_pointer_modifier(self, key: str) -> bool:
-        if not self.pointer_modifier:
-            return False
-        k = (key or "").lower()
-        return k == self.pointer_modifier or k.startswith(self.pointer_modifier + "_")
-
-    def click_coords_reliable(self, modifiers: frozenset[str]) -> bool:
-        """이 클릭의 좌표를 믿을 수 있는가.
-
-        수식키가 설정되지 않은 게임(대부분의 메뉴 기반 UI)에서는 항상 참이다.
-        """
-        if not self.pointer_modifier:
-            return True
-        return self.pointer_modifier in modifiers
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> InputRules:
-        return cls(
-            pointer_modifier=str(d.get("pointer_modifier", "")).lower(),
-            ignore_keys=frozenset(str(k).lower() for k in (d.get("ignore_keys") or [])),
-            drop_unmodified_clicks=bool(d.get("drop_unmodified_clicks", False)),
-        )
-
-
-@dataclass
 class GameProfile:
-    key: str                              # 파일명 기반 식별자 (예: "genshin")
-    name: str                             # 표시 이름 (예: "원신")
-    title_regex: str = ""
-    process_name: str = ""
-    ui_language: str = "ko"
-    #: LLM 프롬프트에 주입할 게임 배경 지식. 화면 명명 품질을 크게 좌우한다.
-    llm_context: str = ""
-    #: 이 게임에서 의미 있는 키 (TC 절차 문구에 그대로 쓰인다).
-    key_hints: dict[str, str] = field(default_factory=dict)
-    #: 에뮬레이터 등 창 안에 다른 UI가 있는 경우 True.
-    is_emulator: bool = False
-    #: 입력 해석 규칙.
-    input_rules: InputRules = field(default_factory=InputRules)
-
-    # -- 창 매칭 -----------------------------------------------------
-
-    def matches_window(self, title: str, process: str = "") -> bool:
-        """창 제목/프로세스명이 이 프로파일에 해당하는지.
-
-        프로세스명이 주어지면 그것을 우선한다 — 제목은 로케일과 패치로 바뀌지만
-        실행 파일명은 안정적이다.
-        """
-        if self.process_name and process:
-            if process.lower() == self.process_name.lower():
-                return True
-        if self.title_regex and title:
-            if re.search(self.title_regex, title):
-                return True
-        return False
-
-    def describe_key(self, key: str) -> str:
-        """키 이름을 TC 문구용으로 바꾼다. 예: 'esc' → 'ESC(뒤로가기)'."""
-        hint = self.key_hints.get(key.lower())
-        return f"{key.upper()}({hint})" if hint else key.upper()
-
-    # -- 로딩 --------------------------------------------------------
+    key: str    # 파일명 기반 식별자 (예: "genshin")
+    name: str   # 표시 이름 (예: "원신")
 
     @classmethod
     def from_dict(cls, key: str, d: dict[str, Any]) -> GameProfile:
-        window = d.get("window") or {}
-        # capture_roi / static_ignore 는 녹화 파이프라인 전용 키였다 — 남아 있는
-        # YAML 값은 무시한다 (읽지 않는다).
-
-        return cls(
-            key=key,
-            name=d.get("name", key),
-            title_regex=window.get("title_regex", ""),
-            process_name=window.get("process", ""),
-            ui_language=d.get("ui_language", "ko"),
-            llm_context=(d.get("llm_context") or "").strip(),
-            key_hints={str(k).lower(): str(v) for k, v in (d.get("key_hints") or {}).items()},
-            is_emulator=bool(d.get("is_emulator", False)),
-            input_rules=InputRules.from_dict(d.get("input") or {}),
-        )
+        return cls(key=key, name=d.get("name", key))
 
     @classmethod
     def load(cls, path: Path | str) -> GameProfile:
@@ -144,20 +48,3 @@ def load_profiles(profiles_dir: Path | str) -> dict[str, GameProfile]:
         except (yaml.YAMLError, KeyError, ValueError, OSError) as exc:
             print(f"[프로파일] {f.name} 을(를) 건너뜁니다: {exc}")
     return out
-
-
-def get_profile(profiles_dir: Path | str, key: str) -> GameProfile:
-    profiles = load_profiles(profiles_dir)
-    if key in profiles:
-        return profiles[key]
-    available = ", ".join(sorted(profiles)) or "(없음)"
-    raise KeyError(f"프로파일 '{key}'를 찾을 수 없습니다. 사용 가능: {available}")
-
-
-def generic_profile(name: str = "미지정 게임") -> GameProfile:
-    """프로파일 없이 아무 창이나 잡을 때 쓰는 폴백.
-
-    창 매칭 규칙이 비어 있어 :meth:`matches_window`가 항상 False를 돌려준다.
-    호출부는 이 경우 사용자에게 창을 직접 고르게 해야 한다.
-    """
-    return GameProfile(key="generic", name=name, llm_context="일반 PC 게임.")

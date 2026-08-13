@@ -4,7 +4,6 @@
       "Bash(.venv/Scripts/qatc.exe slot *)",
       "Bash(.venv/Scripts/qatc.exe knowledge *)",
       "Bash(.venv/Scripts/qatc.exe tc *)",
-      "Bash(.venv/Scripts/qatc.exe list *)",
       "Bash(.venv/Scripts/qatc.exe export *)",
       "Bash(.venv/Scripts/python.exe -m pytest *)"
     ]
