@@ -2,12 +2,14 @@
 
 from .models import Content, Slot, SlotSpec, SlotStatus
 from .slots import BASE_SLOTS, KNOWN_TYPES, TYPE_SLOTS, build_slot_set
+from .store import KnowledgeStore
 
 __all__ = [
     "BASE_SLOTS",
     "KNOWN_TYPES",
     "TYPE_SLOTS",
     "Content",
+    "KnowledgeStore",
     "Slot",
     "SlotSpec",
     "SlotStatus",

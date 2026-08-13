@@ -99,6 +99,7 @@ class LlmConfig:
 @dataclass
 class AppConfig:
     sessions_root: str = ""
+    knowledge_root: str = ""
     profiles_dir: str = ""
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     analyze: AnalyzeConfig = field(default_factory=AnalyzeConfig)
@@ -107,12 +108,20 @@ class AppConfig:
     def __post_init__(self) -> None:
         if not self.sessions_root:
             self.sessions_root = str(project_root() / "sessions")
+        if not self.knowledge_root:
+            self.knowledge_root = str(project_root() / "knowledge")
         if not self.profiles_dir:
             self.profiles_dir = str(project_root() / "profiles")
 
     @property
     def sessions_path(self) -> Path:
         p = Path(self.sessions_root)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def knowledge_path(self) -> Path:
+        p = Path(self.knowledge_root)
         p.mkdir(parents=True, exist_ok=True)
         return p
 
@@ -138,6 +147,7 @@ class AppConfig:
             return cls()
         cfg = cls(
             sessions_root=raw.get("sessions_root", ""),
+            knowledge_root=raw.get("knowledge_root", ""),
             profiles_dir=raw.get("profiles_dir", ""),
         )
         for key, klass in (("capture", CaptureConfig), ("analyze", AnalyzeConfig), ("llm", LlmConfig)):
