@@ -50,6 +50,14 @@ def test_add_testcase_assigns_id(store):
     assert got.id.startswith("tc_")
 
 
+def test_add_testcase_preserves_supplied_id(store):
+    got = store.add_testcase(
+        "파티편성", "정상 경로", _tc(id="tc_fixed_id"), ["core_action"]
+    )
+    assert got.id == "tc_fixed_id"
+    assert [t.id for t in store.testcases("파티편성")] == ["tc_fixed_id"]
+
+
 def test_testcases_roundtrip(store):
     store.add_testcase("파티편성", "정상 경로", _tc(title="원본"), ["core_action"])
     got = store.testcases("파티편성")
