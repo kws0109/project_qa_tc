@@ -101,3 +101,56 @@ def test_export_survives_control_characters_in_summary_sheet(tmp_path):
 def test_export_with_no_testcases_still_writes(tmp_path):
     p = export_tc_excel("파티편성", [], [], tmp_path / "out.xlsx")
     assert p.exists()
+
+
+# --- 근거 철회 (I1) ------------------------------------------------------
+
+
+def test_testcase_sheet_marks_withdrawn_family(tmp_path):
+    p = export_tc_excel("파티편성", [_tc()], [], tmp_path / "out.xlsx",
+                        withdrawn={"정상 경로"})
+    ws = load_workbook(p)["테스트케이스"]
+    header = [c.value for c in ws[1]]
+    assert "근거 상태" in header
+    assert ws[2][header.index("근거 상태")].value == "근거 철회됨"
+
+
+def test_testcase_sheet_marks_live_family_as_valid(tmp_path):
+    """철회가 없으면 같은 칸이 "유효" 여야 한다 — 빈 칸은 "누락"으로 읽힌다."""
+    p = export_tc_excel("파티편성", [_tc()], [], tmp_path / "out.xlsx")
+    ws = load_workbook(p)["테스트케이스"]
+    header = [c.value for c in ws[1]]
+    assert ws[2][header.index("근거 상태")].value == "유효"
+
+
+def test_skipped_sheet_does_not_claim_a_family_has_no_tc_when_it_does(tmp_path):
+    """"만들지 못한 계열" 은 TC 가 실제로 있는 계열에 대해 거짓말이다.
+
+    실측 BEFORE — `테스트케이스` 시트 2행에 `정상 경로` TC 가 있는데
+    `미확인 항목` 시트가 같은 계열을 "만들지 못한 계열" 로 올렸다.
+    """
+    skip = FamilySkip("정상 경로", "core_action", "주 동작은 무엇인가", SlotStatus.NA)
+    p = export_tc_excel("파티편성", [_tc()], [skip], tmp_path / "out.xlsx",
+                        withdrawn={"정상 경로"})
+    ws = load_workbook(p)["미확인 항목"]
+    assert "만들지 못한 계열" not in [c.value for c in ws[1]]
+    row = [c.value for c in ws[2]]
+    assert any(v and "근거 철회됨" in str(v) for v in row)
+    assert not any(v and "TC 없음" in str(v) for v in row)
+
+
+def test_skipped_sheet_still_says_no_tc_when_there_really_is_none(tmp_path):
+    skip = FamilySkip("재화 부족", "cost", "무엇을 소모하는가", SlotStatus.EMPTY)
+    p = export_tc_excel("파티편성", [], [skip], tmp_path / "out.xlsx")
+    ws = load_workbook(p)["미확인 항목"]
+    row = [c.value for c in ws[2]]
+    assert any(v and "TC 없음" in str(v) for v in row)
+
+
+def test_summary_counts_withdrawn_testcases(tmp_path):
+    cases = [_tc(title="철회된 것"), _tc(title="살아 있는 것")]
+    cases[1].category_minor = "경계값"
+    p = export_tc_excel("파티편성", cases, [], tmp_path / "out.xlsx",
+                        withdrawn={"정상 경로"})
+    ws = load_workbook(p)["요약"]
+    assert _summary_value(ws, "근거 철회된 TC") == "1"

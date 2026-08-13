@@ -1,6 +1,11 @@
 import pytest
 
-from qatc.knowledge.gate import FAMILY_META, plan_families, validate_family
+from qatc.knowledge.gate import (
+    FAMILY_META,
+    plan_families,
+    validate_family,
+    withdrawn_families,
+)
 from qatc.knowledge.models import Slot, SlotStatus
 from qatc.knowledge.slots import BASE_SLOTS, TYPE_SLOTS
 from qatc.models import Priority, TCKind
@@ -242,3 +247,41 @@ def test_blocked_representative_reason_reaches_the_refusal_message():
     assert "constraints" in msg
     assert "슬롯이 비어 있음" in msg
     assert "해당 없음으로 표시됨" not in msg
+
+
+# --- 근거 철회 (I1) ------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [SlotStatus.NA, SlotStatus.UNKNOWN, SlotStatus.EMPTY])
+def test_withdrawn_family_is_flagged_for_every_non_filled_status(status):
+    """FILLED 에서 내려온 모든 상태가 근거 철회다.
+
+    인터뷰에서 **정정은 정상 동작**이다 — "아 그거 재화 안 써요"(NA),
+    "잘 모르겠네요"(UNKNOWN), 되돌리기(EMPTY) 셋 다 같은 결과를 만든다.
+    라운드 1a 가 빈 `--value` 를 거부하게 되면서 모델이 `--status unknown` 을
+    쓸 가능성이 커졌고, 그게 정확히 이 상태로 들어간다.
+    """
+    slots = _slots(core_action=status)
+    assert withdrawn_families(slots, {"정상 경로"}) == {"정상 경로"}
+
+
+def test_still_planned_family_is_not_withdrawn():
+    """근거가 살아 있으면 표시하지 않는다 — 아니면 모든 TC가 철회로 보인다."""
+    slots = _slots(core_action=SlotStatus.FILLED)
+    assert withdrawn_families(slots, {"정상 경로"}) == set()
+
+
+def test_withdrawn_only_reports_families_that_actually_have_tcs():
+    """TC가 없는 계열은 철회 대상이 아니다 (그건 그냥 미확인 항목이다)."""
+    slots = _slots(core_action=SlotStatus.FILLED)
+    assert withdrawn_families(slots, set()) == set()
+    assert withdrawn_families(slots, {"재화 부족"}) == {"재화 부족"}
+
+
+def test_unregistered_family_with_existing_tcs_is_withdrawn():
+    """A1 이전에 저장된 미등록 계열 TC 도 근거 철회로 잡힌다.
+
+    `중단됨` 슬롯은 FILLED 지만 이제 계획되지 않으므로, 그 계열로 이미 만들어진
+    TC 는 근거를 잃은 상태다. 두 수정이 같은 방향을 가리켜야 한다.
+    """
+    assert withdrawn_families(_unregistered(), {"중단됨"}) == {"중단됨"}

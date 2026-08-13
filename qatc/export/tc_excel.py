@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Sequence
+from typing import Collection, Sequence
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -22,6 +22,10 @@ from openpyxl.utils import get_column_letter
 
 from ..knowledge.gate import FamilySkip
 from ..models import TCOrigin, TestCase
+
+#: 근거가 살아 있는 TC / 철회된 TC 의 표시. 빈 칸은 "누락"으로 읽히므로 둘 다 쓴다.
+_EVIDENCE_LIVE = "유효"
+_EVIDENCE_WITHDRAWN = "근거 철회됨"
 
 #: openpyxl이 거부하는 제어문자. 탭·개행·복귀는 남긴다 (셀 안에서 유효하다).
 _ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
@@ -53,14 +57,16 @@ def _header(ws, titles: Sequence[str], widths: Sequence[int]) -> None:
     ws.freeze_panes = "A2"
 
 
-def _sheet_testcases(wb: Workbook, cases: Sequence[TestCase]) -> None:
+def _sheet_testcases(
+    wb: Workbook, cases: Sequence[TestCase], withdrawn: Collection[str]
+) -> None:
     ws = wb.active
     ws.title = "테스트케이스"
     _header(
         ws,
         ["TC ID", "대분류", "중분류", "제목", "사전조건", "절차", "기대결과",
-         "우선순위", "유형", "출처", "근거"],
-        [14, 14, 14, 40, 28, 40, 40, 10, 10, 10, 36],
+         "우선순위", "유형", "출처", "근거", "근거 상태"],
+        [14, 14, 14, 40, 28, 40, 40, 10, 10, 10, 36, 14],
     )
     for r, tc in enumerate(cases, start=2):
         values = [
@@ -68,6 +74,7 @@ def _sheet_testcases(wb: Workbook, cases: Sequence[TestCase]) -> None:
             "\n".join(f"{i}. {s}" for i, s in enumerate(tc.steps, 1)),
             "\n".join(f"- {s}" for s in tc.expected),
             tc.priority.value, tc.kind.value, tc.origin.value, tc.rationale,
+            _EVIDENCE_WITHDRAWN if tc.category_minor in withdrawn else _EVIDENCE_LIVE,
         ]
         for col, v in enumerate(values, start=1):
             cell = ws.cell(row=r, column=col, value=clean_cell(str(v)))
@@ -75,18 +82,33 @@ def _sheet_testcases(wb: Workbook, cases: Sequence[TestCase]) -> None:
         ws.cell(row=r, column=10).fill = _ORIGIN_FILL.get(tc.origin, PatternFill())
 
 
-def _sheet_skipped(wb: Workbook, skipped: Sequence[FamilySkip]) -> None:
+def _sheet_skipped(
+    wb: Workbook, skipped: Sequence[FamilySkip], withdrawn: Collection[str]
+) -> None:
+    """미확인 슬롯 시트.
+
+    예전 헤더는 `만들지 못한 계열` 이었는데, 근거가 나중에 철회된 계열에 대해서는
+    **거짓이다** — 같은 통합문서의 `테스트케이스` 시트에 그 계열 TC 가 버젓이 있다.
+    계열 이름만 적고, TC 가 실제로 있는지는 별도 칸으로 정직하게 밝힌다.
+    """
     ws = wb.create_sheet("미확인 항목")
-    _header(ws, ["슬롯", "묻는 것", "만들지 못한 계열", "상태"], [18, 40, 18, 14])
+    _header(ws, ["슬롯", "묻는 것", "계열", "상태", "이 계열의 TC"],
+            [18, 40, 18, 40, 34])
     for r, s in enumerate(skipped, start=2):
+        tc_state = (f"{_EVIDENCE_WITHDRAWN} — 이전에 만든 TC가 남아 있습니다"
+                    if s.family in withdrawn else "TC 없음")
         for col, v in enumerate(
-            [s.slot_key, s.prompt_hint, s.family, s.reason], start=1
+            [s.slot_key, s.prompt_hint, s.family, s.reason, tc_state], start=1
         ):
             ws.cell(row=r, column=col, value=clean_cell(str(v))).alignment = _WRAP
 
 
 def _sheet_summary(
-    wb: Workbook, content: str, cases: Sequence[TestCase], skipped: Sequence[FamilySkip]
+    wb: Workbook,
+    content: str,
+    cases: Sequence[TestCase],
+    skipped: Sequence[FamilySkip],
+    withdrawn: Collection[str],
 ) -> None:
     ws = wb.create_sheet("요약")
     _header(ws, ["항목", "값"], [28, 60])
@@ -99,10 +121,14 @@ def _sheet_summary(
         ("유형별", ", ".join(f"{k} {v}" for k, v in sorted(by_kind.items())) or "-"),
         ("출처별", ", ".join(f"{k} {v}" for k, v in sorted(by_origin.items())) or "-"),
         ("미확인 항목", str(len(skipped))),
+        ("근거 철회된 TC",
+         str(sum(1 for tc in cases if tc.category_minor in withdrawn))),
         ("읽는 방법",
          "출처 '인터뷰'는 담당자가 진술한 내용, '추론됨'은 진술에서 도출한 것입니다. "
          "'추론됨'은 실제로 그렇게 동작하는지 검증되지 않았습니다. "
-         "'미확인 항목' 시트는 아직 설명되지 않아 TC를 만들지 못한 부분입니다."),
+         "'미확인 항목' 시트는 아직 설명되지 않은 항목과 그 계열입니다. "
+         "'근거 상태'가 '근거 철회됨'인 TC는 만든 뒤에 근거 슬롯이 다시 열린 "
+         "것으로, 지우지 않고 남겨 두었습니다 — 내용을 검토한 뒤 채택 여부를 정하세요."),
     ]
     for r, (k, v) in enumerate(rows, start=2):
         ws.cell(row=r, column=1, value=clean_cell(k)).alignment = _WRAP
@@ -114,14 +140,20 @@ def export_tc_excel(
     testcases: Sequence[TestCase],
     skipped: Sequence[FamilySkip],
     out_path: Path | str,
+    withdrawn: Collection[str] = (),
 ) -> Path:
-    """TC를 xlsx로 내보낸다. 반환값은 생성된 파일 경로."""
+    """TC를 xlsx로 내보낸다. 반환값은 생성된 파일 경로.
+
+    :param withdrawn: 근거가 철회된 계열 이름
+        (:func:`~qatc.knowledge.gate.withdrawn_families`). TC를 **지우지 않고**
+        표시만 하므로, 이 값이 비어 있으면 산출물이 자기모순 상태로 나간다.
+    """
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     wb = Workbook()
-    _sheet_testcases(wb, testcases)
-    _sheet_skipped(wb, skipped)
-    _sheet_summary(wb, content, testcases, skipped)
+    _sheet_testcases(wb, testcases, withdrawn)
+    _sheet_skipped(wb, skipped, withdrawn)
+    _sheet_summary(wb, content, testcases, skipped, withdrawn)
     wb.save(path)
     return path

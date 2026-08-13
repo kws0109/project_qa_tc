@@ -451,3 +451,91 @@ class _StdIn:
 
     def read(self) -> str:
         return self._text
+
+
+# --- 근거 철회 (I1) ------------------------------------------------------
+
+
+def _withdraw_core_action():
+    """`정상 경로` 의 근거였던 슬롯을 "해당 없음"으로 되돌린다."""
+    main(["slot", "set", "파티편성", "core_action", "--status", "na"])
+
+
+def test_list_marks_testcase_whose_evidence_was_withdrawn(ready, monkeypatch, capsys):
+    """같은 출력이 "TC가 있다"와 "TC가 없다"를 동시에 말하면 안 된다.
+
+    실측 BEFORE — `정상 경로` TC 를 만든 뒤 근거 슬롯을 NA 로 내리면:
+
+        TC 1건 ... [정상 경로] 정상 동작  (인터뷰)          ← TC가 있다
+        ⚠ ... core_action ... → 정상 경로 TC 없음  [해당 없음으로 표시됨]  ← 없다
+
+    두 문장 중 하나는 반드시 거짓이고, 이 출력이 QA 담당자에게 가는 최종
+    산출물이다. TC 는 **지우지 않는다** — 정정은 인터뷰의 정상 동작이고,
+    사용자가 쌓아온 것을 도구가 조용히 버리면 안 된다.
+    """
+    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    main(["tc", "add", "파티편성", "--family", "정상 경로",
+          "--origin", "interview", "--json", "-"])
+    _withdraw_core_action()
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    assert main(["tc", "list", "파티편성"]) == 0
+    out = capsys.readouterr().out
+    assert "정상 동작" in out              # TC 는 그대로 남아 있다
+    assert "근거 철회됨" in out            # 그런데 근거가 없다고 표시된다
+    assert "정상 경로 TC 없음" not in out  # 거짓말을 하지 않는다
+    assert [t.title for t in _stored(ready)] == ["정상 동작"]   # 삭제 안 함
+
+
+def test_list_still_reports_families_that_really_have_no_tc(ready, capsys):
+    """철회 표시가 진짜 미확인 항목 리포트를 삼키면 안 된다."""
+    assert main(["tc", "list", "파티편성"]) == 0
+    out = capsys.readouterr().out
+    assert "재화 부족 TC 없음" in out
+    assert "근거 철회됨" not in out
+
+
+def test_list_stops_marking_once_evidence_is_restored(ready, monkeypatch, capsys):
+    """슬롯을 다시 채우면 표시가 사라진다 — 표시가 영구 낙인이면 못 쓴다."""
+    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    main(["tc", "add", "파티편성", "--family", "정상 경로",
+          "--origin", "interview", "--json", "-"])
+    _withdraw_core_action()
+    main(["slot", "set", "파티편성", "core_action", "--status", "filled",
+          "--value", "파티를 짜고 적용한다"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    main(["tc", "list", "파티편성"])
+    out = capsys.readouterr().out
+    assert "근거 철회됨" not in out
+    assert "정상 동작" in out
+
+
+def test_export_xlsx_marks_withdrawn_evidence(ready, monkeypatch, capsys, tmp_path):
+    """CLI 가 실제로 철회 정보를 익스포터까지 넘기는지 — 배선을 고정한다.
+
+    `export_tc_excel` 이 아무리 잘 표시해도 `cmd_export` 가 안 넘기면 최종
+    산출물은 그대로 자기모순이다.
+    """
+    from openpyxl import load_workbook
+
+    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    main(["tc", "add", "파티편성", "--family", "정상 경로",
+          "--origin", "interview", "--json", "-"])
+    _withdraw_core_action()
+    out_path = tmp_path / "out.xlsx"
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    assert main(["export", "파티편성", "--out", str(out_path)]) == 0
+    wb = load_workbook(out_path)
+    assert wb.sheetnames == ["테스트케이스", "미확인 항목", "요약"]
+
+    ws = wb["테스트케이스"]
+    header = [c.value for c in ws[1]]
+    assert "근거 상태" in header
+    assert ws[2][header.index("근거 상태")].value == "근거 철회됨"
+
+    skipped = wb["미확인 항목"]
+    rows = [[c.value for c in r] for r in skipped.iter_rows(min_row=2)]
+    withdrawn_row = next(r for r in rows if "core_action" in r)
+    assert any(v and "근거 철회됨" in str(v) for v in withdrawn_row)

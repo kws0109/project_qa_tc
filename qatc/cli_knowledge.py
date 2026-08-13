@@ -23,6 +23,7 @@ from .knowledge.gate import (
     plan_families,
     unregistered_family_reason,
     validate_family,
+    withdrawn_families,
 )
 from .knowledge.models import SlotStatus
 from .knowledge.slots import KNOWN_TYPES
@@ -377,15 +378,26 @@ def cmd_tc_add(args: argparse.Namespace, cfg: AppConfig) -> int:
 
 
 def cmd_tc_list(args: argparse.Namespace, cfg: AppConfig) -> int:
+    """TC 목록 + 미확인 리포트.
+
+    저장된 TC 와 **지금의** 슬롯 상태를 대조한다. 인터뷰는 정정이 일상이라
+    (사용자가 답을 바꾸면 슬롯이 FILLED 에서 내려온다) 생성 시점의 근거가
+    지금도 있다는 보장이 없다. 예전에는 같은 출력이 `[정상 경로] …` 로 TC를
+    보여주면서 몇 줄 아래에서 `정상 경로 TC 없음` 이라고 말했다 — 둘 중
+    하나는 반드시 거짓이고, 이게 QA 담당자에게 가는 최종 산출물이다.
+    """
     store = resolve_store(cfg, args.game, args.content)
     try:
         if store.get_content(args.content) is None:
             _p(_no_content(args.content))
             return 1
         cases = store.testcases(args.content)
-        _, skipped = plan_families(store.slots(args.content))
+        slots = store.slots(args.content)
     finally:
         store.close()
+
+    _, skipped = plan_families(slots)
+    withdrawn = withdrawn_families(slots, {tc.category_minor for tc in cases})
 
     by_kind: dict[str, int] = {}
     for tc in cases:
@@ -394,11 +406,26 @@ def cmd_tc_list(args: argparse.Namespace, cfg: AppConfig) -> int:
     _p(f"TC {len(cases)}건" + (f" ({summary})" if summary else ""))
 
     for tc in cases:
-        _p(f"  [{tc.category_minor}] {tc.title}  ({tc.origin.value})")
+        mark = "  ⚠ 근거 철회됨" if tc.category_minor in withdrawn else ""
+        _p(f"  [{tc.category_minor}] {tc.title}  ({tc.origin.value}){mark}")
 
-    if skipped:
+    if withdrawn:
+        _p("\n⚠ 근거가 철회된 계열이 있습니다 — TC는 지우지 않았습니다")
+        by_family = {s.family: s for s in skipped}
+        for family in sorted(withdrawn):
+            s = by_family.get(family)
+            where = (f"{s.slot_key} ({s.prompt_hint}) · {s.reason}" if s
+                     else "이 계열의 근거 슬롯이 더 이상 없습니다")
+            _p(f"   {family:<16} ← {where}")
+        _p("\n   슬롯을 다시 채우면 표시가 사라집니다. "
+           "필요 없어진 TC는 내용을 확인하고 직접 정리하세요.")
+
+    # 근거가 철회된 계열은 여기서 뺀다 — TC 가 실제로 있으므로
+    # "TC 없음" 은 거짓이다. 위 블록이 따로 설명한다.
+    open_skips = [s for s in skipped if s.family not in withdrawn]
+    if open_skips:
         _p("\n⚠ 다음 항목이 미확인이라 해당 TC가 없습니다")
-        for s in skipped:
+        for s in open_skips:
             _p(f"   {s.slot_key:<16} ({s.prompt_hint}) → {s.family} TC 없음  "
                f"[{s.reason}]")
         _p("\n   이어서 채우려면 Claude Code에서 인터뷰를 재개하세요.")
@@ -452,14 +479,18 @@ def cmd_export(args: argparse.Namespace, cfg: AppConfig) -> int:
             _p(_no_content(args.content))
             return 1
         cases = store.testcases(args.content)
-        _, skipped = plan_families(store.slots(args.content))
+        slots = store.slots(args.content)
         game = store.game
     finally:
         store.close()
 
+    _, skipped = plan_families(slots)
+    withdrawn = withdrawn_families(slots, {tc.category_minor for tc in cases})
+
     out = Path(args.out) if args.out else cfg.knowledge_path / f"{game}_{args.content}_TC.xlsx"
-    path = export_tc_excel(args.content, cases, skipped, out)
-    _p(f"✓ {path}  (TC {len(cases)}건 · 미확인 {len(skipped)}건)")
+    path = export_tc_excel(args.content, cases, skipped, out, withdrawn)
+    _p(f"✓ {path}  (TC {len(cases)}건 · 미확인 {len(skipped)}건"
+       + (f" · 근거 철회 {len(withdrawn)}계열" if withdrawn else "") + ")")
     return 0
 
 
