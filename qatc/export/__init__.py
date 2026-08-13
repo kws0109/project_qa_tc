@@ -2,5 +2,12 @@
 
 from .excel import export_excel
 from .mermaid import export_mermaid, render_mermaid
+from .tc_excel import clean_cell, export_tc_excel
 
-__all__ = ["export_excel", "export_mermaid", "render_mermaid"]
+__all__ = [
+    "export_excel",
+    "export_mermaid",
+    "render_mermaid",
+    "clean_cell",
+    "export_tc_excel",
+]

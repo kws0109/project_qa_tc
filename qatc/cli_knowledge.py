@@ -310,8 +310,23 @@ def cmd_knowledge(args: argparse.Namespace, cfg: AppConfig) -> int:
 
 
 def cmd_export(args: argparse.Namespace, cfg: AppConfig) -> int:
-    _p("xlsx 출력은 아직 연결되지 않았습니다 (구현 계획 Task 9).")
-    return 1
+    from .export.tc_excel import export_tc_excel
+
+    store = resolve_store(cfg, args.game, args.content)
+    try:
+        if store.get_content(args.content) is None:
+            _p(f"컨텐츠 '{args.content}'가 없습니다.")
+            return 1
+        cases = store.testcases(args.content)
+        _, skipped = plan_families(store.slots(args.content))
+        game = store.game
+    finally:
+        store.close()
+
+    out = Path(args.out) if args.out else cfg.knowledge_path / f"{game}_{args.content}_TC.xlsx"
+    path = export_tc_excel(args.content, cases, skipped, out)
+    _p(f"✓ {path}  (TC {len(cases)}건 · 미확인 {len(skipped)}건)")
+    return 0
 
 
 def register(sub) -> None:
