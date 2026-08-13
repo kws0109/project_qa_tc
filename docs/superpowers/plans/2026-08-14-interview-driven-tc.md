@@ -841,7 +841,7 @@ Expected: PASS (12 passed)
 - [ ] **Step 6: 전체 회귀 확인**
 
 Run: `.venv\Scripts\python.exe -m pytest`
-Expected: 160 passed
+Expected: 161 passed
 
 - [ ] **Step 7: 커밋**
 
@@ -1771,7 +1771,7 @@ Expected: PASS (10 passed)
 - [ ] **Step 6: 전체 회귀 확인**
 
 Run: `.venv\Scripts\python.exe -m pytest`
-Expected: 191 passed
+Expected: 192 passed
 
 - [ ] **Step 7: 커밋**
 
@@ -2369,7 +2369,7 @@ Expected: PASS (5 passed)
 - [ ] **Step 7: 전체 회귀 확인**
 
 Run: `.venv\Scripts\python.exe -m pytest`
-Expected: 204 passed
+Expected: 205 passed
 
 기존 테스트가 `qatc analyze` 등을 직접 호출한다면 `--legacy` 를 붙이도록 고친다.
 
@@ -2669,7 +2669,7 @@ Expected: PASS (9 passed)
 - [ ] **Step 6: 전체 회귀 확인**
 
 Run: `.venv\Scripts\python.exe -m pytest`
-Expected: 213 passed
+Expected: 214 passed
 
 - [ ] **Step 7: 커밋**
 
@@ -2960,7 +2960,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - [ ] **Step 1: 삭제 전 기준선 확인**
 
 Run: `.venv\Scripts\python.exe -m pytest`
-Expected: 218 passed
+Expected: 219 passed
 
 새 경로가 끝까지 동작하는지 손으로 확인한다:
 
@@ -3020,7 +3020,7 @@ git rm -q tests/test_capture.py tests/test_analyze.py tests/test_icons.py tests/
 - [ ] **Step 7: 테스트 통과 확인**
 
 Run: `.venv\Scripts\python.exe -m pytest`
-Expected: 62 passed (지식·CLI·xlsx·스킬 테스트만 남는다)
+Expected: 63 passed (지식·CLI·xlsx·스킬 테스트만 남는다)
 
 `ImportError` 가 나면 지운 모듈을 아직 참조하는 곳이 있다는 뜻이다. 다음으로 찾는다:
 
@@ -3060,16 +3060,16 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 | # | 태스크 | 산출물 | 누적 테스트 |
 |---|---|---|---|
 | 1 | 지식 도메인 타입 | `Slot` `SlotStatus` `Content`, `TCOrigin.INTERVIEW` | 137 |
-| 2 | 슬롯 세트 조립 | `BASE_SLOTS` `TYPE_SLOTS` `build_slot_set` | 148 |
-| 3 | 지식 저장소 | `KnowledgeStore` | 160 |
-| 4 | **계열 게이트** | `plan_families` `validate_family` | 171 |
-| 5 | TC 저장·병합 | `add_testcase` `replace_generated` | 181 |
-| 6 | `qatc slot` | status/init/set/add | 191 |
-| 7 | `qatc tc` | plan/add/list | 199 |
-| 8 | `qatc knowledge` + 레거시 게이트 | `--legacy` | 204 |
-| 9 | xlsx 출력 | `export_tc_excel` `clean_cell` | 213 |
-| 10 | 인터뷰 스킬 | `.claude/skills/interview/SKILL.md` | 218 |
-| 11 | 녹화 파이프라인 제거 | — | 62 |
+| 2 | 슬롯 세트 조립 | `BASE_SLOTS` `TYPE_SLOTS` `build_slot_set` | 149 |
+| 3 | 지식 저장소 | `KnowledgeStore` | 161 |
+| 4 | **계열 게이트** | `plan_families` `validate_family` | 172 |
+| 5 | TC 저장·병합 | `add_testcase` `replace_generated` | 182 |
+| 6 | `qatc slot` | status/init/set/add | 192 |
+| 7 | `qatc tc` | plan/add/list | 200 |
+| 8 | `qatc knowledge` + 레거시 게이트 | `--legacy` | 205 |
+| 9 | xlsx 출력 | `export_tc_excel` `clean_cell` | 214 |
+| 10 | 인터뷰 스킬 | `.claude/skills/interview/SKILL.md` | 219 |
+| 11 | 녹화 파이프라인 제거 | — | 63 |
 
 Task 4와 7이 이 설계의 불변식을 담는다. 나머지가 흔들려도 이 둘이 지켜지면
 근거 없는 TC는 만들어지지 않는다.
