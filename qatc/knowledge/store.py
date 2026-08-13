@@ -260,8 +260,17 @@ class KnowledgeStore:
         return tc
 
     def update_testcase_row(self, tc: TestCase) -> None:
-        """본문만 갱신한다. `generated_hash` 는 건드리지 않으므로 이후
-        :meth:`replace_generated` 가 '사용자가 고쳤다'로 판정한다."""
+        """본문만 갱신한다 — **테스트 전용 도구다. 프로덕션 호출자는 없다.**
+
+        `generated_hash` 를 일부러 건드리지 않으므로, 이후
+        :meth:`replace_generated` 가 그 TC를 '사용자가 고쳤다'로 판정해
+        보존한다. 즉 이 메서드의 존재 이유는 **"사람이 xlsx 를 열어 손으로
+        고친 TC"** 상태를 테스트가 만들 수 있게 하는 것이다 (현재 사람이
+        고친 내용을 DB로 되돌리는 경로는 없다).
+
+        나중에 그 되돌림 경로를 만든다면 이 메서드가 그 출발점이지만,
+        그때는 해시 갱신 여부를 다시 판단해야 한다.
+        """
         self._db().execute(
             "UPDATE testcases SET row = ? WHERE id = ?",
             (json.dumps(tc.to_row(), ensure_ascii=False), tc.id),

@@ -3,23 +3,8 @@ import json
 import pytest
 
 from qatc.cli import main
-from qatc.config import AppConfig
 from qatc.knowledge.models import SlotStatus
 from qatc.knowledge.store import KnowledgeStore
-
-
-@pytest.fixture()
-def cfg_env(tmp_path, monkeypatch):
-    kroot = tmp_path / "knowledge"
-    original = AppConfig.load
-
-    def patched(cls=AppConfig):
-        c = original()
-        c.knowledge_root = str(kroot)
-        return c
-
-    monkeypatch.setattr(AppConfig, "load", staticmethod(patched))
-    return kroot
 
 
 @pytest.fixture()
@@ -56,8 +41,8 @@ def test_plan_lists_skipped_with_reason(ready, capsys):
     assert skipped["재화 부족"]["slot"] == "cost"
 
 
-def test_add_accepts_planned_family(ready, capsys, monkeypatch):
-    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+def test_add_accepts_planned_family(stdin_text, ready, capsys, monkeypatch):
+    stdin_text(_payload())
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 0
@@ -65,8 +50,8 @@ def test_add_accepts_planned_family(ready, capsys, monkeypatch):
         assert [t.title for t in s.testcases("파티편성")] == ["정상 동작"]
 
 
-def test_add_rejects_unplanned_family(ready, capsys, monkeypatch):
-    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+def test_add_rejects_unplanned_family(stdin_text, ready, capsys, monkeypatch):
+    stdin_text(_payload())
     rc = main(["tc", "add", "파티편성", "--family", "재화 부족",
                "--origin", "inferred", "--json", "-"])
     assert rc == 1
@@ -76,9 +61,9 @@ def test_add_rejects_unplanned_family(ready, capsys, monkeypatch):
     assert "tc plan" in out
 
 
-def test_add_rejects_unknown_family(ready, monkeypatch, capsys):
+def test_add_rejects_unknown_family(stdin_text, ready, monkeypatch, capsys):
     """등록되지 않은 계열 이름은 `tc add` 에서 거부된다."""
-    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    stdin_text(_payload())
     rc = main(["tc", "add", "파티편성", "--family", "없는계열",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -96,7 +81,7 @@ def _inject_unregistered_family_slot(root):
         s.set_slot("파티편성", "네트워크", SlotStatus.FILLED, "전투 중 통신이 끊긴다")
 
 
-def test_plan_and_add_agree_on_unregistered_family(ready, monkeypatch, capsys):
+def test_plan_and_add_agree_on_unregistered_family(stdin_text, ready, monkeypatch, capsys):
     """`tc plan` 과 `tc add` 가 미등록 계열에 대해 같은 답을 해야 한다.
 
     예전에는 `tc plan` 이 `중단됨`(오타)을 **`정상` / Medium 으로 계획**하고
@@ -112,7 +97,7 @@ def test_plan_and_add_agree_on_unregistered_family(ready, monkeypatch, capsys):
     skipped = {s["family"]: s for s in data["skipped"]}
     assert "등록되지 않은 계열" in skipped["중단됨"]["reason"]
 
-    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    stdin_text(_payload())
     rc = main(["tc", "add", "파티편성", "--family", "중단됨",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -121,7 +106,7 @@ def test_plan_and_add_agree_on_unregistered_family(ready, monkeypatch, capsys):
     assert _stored(ready) == []
 
 
-def test_add_rejects_missing_required_field(ready, monkeypatch, capsys):
+def test_add_rejects_missing_required_field(stdin_text, ready, monkeypatch, capsys):
     """필수 필드가 두 개 빠지면 실제 거부 메시지에 **둘 다** 나와야 한다.
 
     예전 판은 `rc == 1` 과 `"steps" in out` 만 봤고, 그 두 단언은 **검증이 0인
@@ -132,7 +117,7 @@ def test_add_rejects_missing_required_field(ready, monkeypatch, capsys):
     실제 메시지를 고정해 그 구멍을 막는다.
     """
     bad = json.dumps({"testcases": [{"title": "제목만 있음"}]}, ensure_ascii=False)
-    monkeypatch.setattr("sys.stdin", _StdIn(bad))
+    stdin_text(bad)
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -143,14 +128,14 @@ def test_add_rejects_missing_required_field(ready, monkeypatch, capsys):
     assert "KeyError" not in out          # 날 예외가 아니라 우리 메시지여야 한다
 
 
-def test_add_missing_field_message_names_only_what_is_missing(ready, monkeypatch, capsys):
+def test_add_missing_field_message_names_only_what_is_missing(stdin_text, ready, monkeypatch, capsys):
     """빠진 필드만 나열한다.
 
     필수 필드 세 개를 항상 찍는 구현으로는 통과할 수 없어야, 메시지가 실제로
     무엇이 빠졌는지 계산한다는 것이 고정된다.
     """
     bad = json.dumps({"testcases": [{"title": "t", "steps": ["s"]}]}, ensure_ascii=False)
-    monkeypatch.setattr("sys.stdin", _StdIn(bad))
+    stdin_text(bad)
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -175,14 +160,14 @@ def _stored(root):
         return s.testcases("파티편성")
 
 
-def test_add_rejects_string_steps(ready, monkeypatch, capsys):
+def test_add_rejects_string_steps(stdin_text, ready, monkeypatch, capsys):
     """`"steps": "한 줄"` 은 조용히 글자 단위로 쪼개지면 안 된다.
 
     이 명령의 호출자는 LLM 이고, 배열이어야 할 자리에 문자열을 주는 것은 가장
     흔한 JSON 형태 오류다. 예전에는 truthiness 검사만 통과하면 문자열을 순회해
     `['한', ' ', '줄']` 이 rc=0 + 성공 메시지와 함께 최종 xlsx 절차 칸까지 갔다.
     """
-    monkeypatch.setattr("sys.stdin", _StdIn(_one(steps="한 줄")))
+    stdin_text(_one(steps="한 줄"))
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -192,8 +177,8 @@ def test_add_rejects_string_steps(ready, monkeypatch, capsys):
     assert _stored(ready) == []              # 쓰레기가 저장되지 않았다
 
 
-def test_add_rejects_string_expected(ready, monkeypatch, capsys):
-    monkeypatch.setattr("sys.stdin", _StdIn(_one(expected="한 줄")))
+def test_add_rejects_string_expected(stdin_text, ready, monkeypatch, capsys):
+    stdin_text(_one(expected="한 줄"))
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -201,10 +186,10 @@ def test_add_rejects_string_expected(ready, monkeypatch, capsys):
     assert _stored(ready) == []
 
 
-def test_add_rejects_non_dict_item(ready, monkeypatch, capsys):
+def test_add_rejects_non_dict_item(stdin_text, ready, monkeypatch, capsys):
     """항목이 객체가 아니면 날 `AttributeError` 대신 다음 조치를 알린다."""
     bad = json.dumps({"testcases": [["제목만 든 배열"]]}, ensure_ascii=False)
-    monkeypatch.setattr("sys.stdin", _StdIn(bad))
+    stdin_text(bad)
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -213,9 +198,9 @@ def test_add_rejects_non_dict_item(ready, monkeypatch, capsys):
     assert "AttributeError" not in out      # 파이썬 타입명이 새어나오면 안 된다
 
 
-def test_add_rejects_non_string_list_element(ready, monkeypatch, capsys):
+def test_add_rejects_non_string_list_element(stdin_text, ready, monkeypatch, capsys):
     """배열 원소가 문자열이 아니면 `str()` 로 뭉개지 않고 거부한다."""
-    monkeypatch.setattr("sys.stdin", _StdIn(_one(steps=[{"a": 1}])))
+    stdin_text(_one(steps=[{"a": 1}]))
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -229,7 +214,7 @@ def test_add_rejects_non_string_list_element(ready, monkeypatch, capsys):
     ('42', "int"),
     ('null', "NoneType"),
 ], ids=["array", "string", "number", "null"])
-def test_add_rejects_non_object_top_level(ready, monkeypatch, capsys, raw, kind):
+def test_add_rejects_non_object_top_level(stdin_text, ready, monkeypatch, capsys, raw, kind):
     """최상위가 객체가 아니면 날 `AttributeError` 대신 기대 형태를 알려준다.
 
     라운드 1a 는 항목 하나하나(`_validate_item`)만 검사하고 **페이로드 자체는
@@ -244,7 +229,7 @@ def test_add_rejects_non_object_top_level(ready, monkeypatch, capsys, raw, kind)
     출력이다.) 이 명령의 호출자는 인터뷰를 진행하는 모델이라, 파이썬 타입명은
     다음에 무엇을 할지 알려주지 않는다.
     """
-    monkeypatch.setattr("sys.stdin", _StdIn(raw))
+    stdin_text(raw)
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -256,9 +241,9 @@ def test_add_rejects_non_object_top_level(ready, monkeypatch, capsys, raw, kind)
     assert _stored(ready) == []
 
 
-def test_add_missing_testcases_key_names_next_action(ready, monkeypatch, capsys):
+def test_add_missing_testcases_key_names_next_action(stdin_text, ready, monkeypatch, capsys):
     """객체이긴 한데 `testcases` 가 없는 경우도 다음 조치를 함께 알린다."""
-    monkeypatch.setattr("sys.stdin", _StdIn('{"cases": []}'))
+    stdin_text('{"cases": []}')
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -267,9 +252,9 @@ def test_add_missing_testcases_key_names_next_action(ready, monkeypatch, capsys)
     assert "title" in out                     # 기대 형태를 예시로 보여준다
 
 
-def test_add_rejects_unparseable_json_text(ready, monkeypatch, capsys):
+def test_add_rejects_unparseable_json_text(stdin_text, ready, monkeypatch, capsys):
     """JSON 자체가 깨진 경우 — 이미 막혀 있던 경로를 고정한다."""
-    monkeypatch.setattr("sys.stdin", _StdIn("{not json"))
+    stdin_text("{not json")
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -278,14 +263,14 @@ def test_add_rejects_unparseable_json_text(ready, monkeypatch, capsys):
     assert "JSONDecodeError" not in out
 
 
-def test_add_rejects_non_string_title(ready, monkeypatch, capsys):
+def test_add_rejects_non_string_title(stdin_text, ready, monkeypatch, capsys):
     """`title` 이 문자열이 아니면 `str()` 로 뭉개지 않고 거부한다.
 
     `{"title": {"a": 1}}` 은 truthy 라 필수 필드 검사를 통과하고,
     `str(item["title"])` 이 `{'a': 1}` 을 그대로 xlsx 제목 칸에 넣었다.
     steps/expected 와 같은 결함인데 라운드 1a 에서 `title` 만 빠졌다.
     """
-    monkeypatch.setattr("sys.stdin", _StdIn(_one(title={"a": 1})))
+    stdin_text(_one(title={"a": 1}))
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -295,9 +280,9 @@ def test_add_rejects_non_string_title(ready, monkeypatch, capsys):
     assert _stored(ready) == []
 
 
-def test_add_rejects_non_string_precondition(ready, monkeypatch, capsys):
+def test_add_rejects_non_string_precondition(stdin_text, ready, monkeypatch, capsys):
     """선택 필드도 문자열이어야 한다 — 있으면 그대로 xlsx 칸에 들어간다."""
-    monkeypatch.setattr("sys.stdin", _StdIn(_one(precondition=["a", "b"])))
+    stdin_text(_one(precondition=["a", "b"]))
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -305,9 +290,9 @@ def test_add_rejects_non_string_precondition(ready, monkeypatch, capsys):
     assert _stored(ready) == []
 
 
-def test_add_rejects_unknown_priority(ready, monkeypatch, capsys):
+def test_add_rejects_unknown_priority(stdin_text, ready, monkeypatch, capsys):
     """잘못된 priority 는 날 `ValueError` 대신 유효값을 알려주며 거부한다."""
-    monkeypatch.setattr("sys.stdin", _StdIn(_one(priority="긴급")))
+    stdin_text(_one(priority="긴급"))
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -318,12 +303,12 @@ def test_add_rejects_unknown_priority(ready, monkeypatch, capsys):
     assert _stored(ready) == []
 
 
-def test_add_names_the_offending_index(ready, monkeypatch, capsys):
+def test_add_names_the_offending_index(stdin_text, ready, monkeypatch, capsys):
     """여러 건 중 몇 번째가 틀렸는지 짚는다 — 앞의 두 건은 유효하다."""
     ok = {"title": "t", "steps": ["s"], "expected": ["e"]}
     payload = json.dumps({"testcases": [ok, ok, {**ok, "steps": "문자열"}]},
                          ensure_ascii=False)
-    monkeypatch.setattr("sys.stdin", _StdIn(payload))
+    stdin_text(payload)
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
@@ -334,16 +319,16 @@ def test_add_names_the_offending_index(ready, monkeypatch, capsys):
     assert _stored(ready) == []
 
 
-def test_add_accepts_valid_priority_override(ready, monkeypatch):
+def test_add_accepts_valid_priority_override(stdin_text, ready, monkeypatch):
     """검증이 정상 입력까지 막지 않는지 — 유효한 priority 는 그대로 쓰인다."""
-    monkeypatch.setattr("sys.stdin", _StdIn(_one(priority="Low")))
+    stdin_text(_one(priority="Low"))
     assert main(["tc", "add", "파티편성", "--family", "정상 경로",
                  "--origin", "interview", "--json", "-"]) == 0
     assert _stored(ready)[0].priority.value == "Low"
 
 
-def test_add_sets_kind_and_priority_from_family(ready, monkeypatch):
-    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+def test_add_sets_kind_and_priority_from_family(stdin_text, ready, monkeypatch):
+    stdin_text(_payload())
     main(["tc", "add", "파티편성", "--family", "정상 경로",
           "--origin", "interview", "--json", "-"])
     with KnowledgeStore(ready / "starrail.db") as s:
@@ -355,8 +340,8 @@ def test_add_sets_kind_and_priority_from_family(ready, monkeypatch):
     assert tc.category_minor == "정상 경로"
 
 
-def test_list_shows_unmet_slots(ready, monkeypatch, capsys):
-    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+def test_list_shows_unmet_slots(stdin_text, ready, monkeypatch, capsys):
+    stdin_text(_payload())
     main(["tc", "add", "파티편성", "--family", "정상 경로",
           "--origin", "interview", "--json", "-"])
     assert main(["tc", "list", "파티편성"]) == 0
@@ -365,11 +350,11 @@ def test_list_shows_unmet_slots(ready, monkeypatch, capsys):
     assert "재화 부족" in out  # 미충족 리포트
 
 
-def test_add_rejects_unknown_status_slot_family(ready, monkeypatch, capsys):
+def test_add_rejects_unknown_status_slot_family(stdin_text, ready, monkeypatch, capsys):
     # cost 슬롯을 "모른다"로 답한 상태 — empty 와 다른 사유여야 한다.
     main(["slot", "set", "파티편성", "cost", "--status", "unknown"])
     capsys.readouterr()
-    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    stdin_text(_payload())
     rc = main(["tc", "add", "파티편성", "--family", "재화 부족",
                "--origin", "inferred", "--json", "-"])
     assert rc == 1
@@ -380,11 +365,11 @@ def test_add_rejects_unknown_status_slot_family(ready, monkeypatch, capsys):
     assert "해당 없음으로 표시됨" not in out
 
 
-def test_add_rejects_na_status_slot_family(ready, monkeypatch, capsys):
+def test_add_rejects_na_status_slot_family(stdin_text, ready, monkeypatch, capsys):
     # cost 슬롯이 "해당 없음"으로 표시된 상태 — empty/unknown 과 다른 사유여야 한다.
     main(["slot", "set", "파티편성", "cost", "--status", "na"])
     capsys.readouterr()
-    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    stdin_text(_payload())
     rc = main(["tc", "add", "파티편성", "--family", "재화 부족",
                "--origin", "inferred", "--json", "-"])
     assert rc == 1
@@ -395,7 +380,7 @@ def test_add_rejects_na_status_slot_family(ready, monkeypatch, capsys):
     assert "사용자가 모른다고 답함" not in out
 
 
-def test_add_reports_correct_added_and_kept_counts(ready, monkeypatch, capsys):
+def test_add_reports_correct_added_and_kept_counts(stdin_text, ready, monkeypatch, capsys):
     payload = json.dumps({
         "testcases": [
             {
@@ -414,7 +399,7 @@ def test_add_reports_correct_added_and_kept_counts(ready, monkeypatch, capsys):
             },
         ]
     }, ensure_ascii=False)
-    monkeypatch.setattr("sys.stdin", _StdIn(payload))
+    stdin_text(payload)
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 0
@@ -427,8 +412,8 @@ def test_add_reports_correct_added_and_kept_counts(ready, monkeypatch, capsys):
         assert len(s.testcases("파티편성")) == 2
 
 
-def test_add_stores_inferred_origin(ready, monkeypatch):
-    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+def test_add_stores_inferred_origin(stdin_text, ready, monkeypatch):
+    stdin_text(_payload())
     main(["tc", "add", "파티편성", "--family", "정상 경로",
           "--origin", "inferred", "--json", "-"])
     with KnowledgeStore(ready / "starrail.db") as s:
@@ -436,8 +421,8 @@ def test_add_stores_inferred_origin(ready, monkeypatch):
     assert tc.origin.value == "추론됨"
 
 
-def test_add_stores_user_origin(ready, monkeypatch):
-    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+def test_add_stores_user_origin(stdin_text, ready, monkeypatch):
+    stdin_text(_payload())
     main(["tc", "add", "파티편성", "--family", "정상 경로",
           "--origin", "user", "--json", "-"])
     with KnowledgeStore(ready / "starrail.db") as s:
@@ -445,12 +430,6 @@ def test_add_stores_user_origin(ready, monkeypatch):
     assert tc.origin.value == "사용자추가"
 
 
-class _StdIn:
-    def __init__(self, text: str):
-        self._text = text
-
-    def read(self) -> str:
-        return self._text
 
 
 # --- 근거 철회 (I1) ------------------------------------------------------
@@ -461,7 +440,7 @@ def _withdraw_core_action():
     main(["slot", "set", "파티편성", "core_action", "--status", "na"])
 
 
-def test_list_marks_testcase_whose_evidence_was_withdrawn(ready, monkeypatch, capsys):
+def test_list_marks_testcase_whose_evidence_was_withdrawn(stdin_text, ready, monkeypatch, capsys):
     """같은 출력이 "TC가 있다"와 "TC가 없다"를 동시에 말하면 안 된다.
 
     실측 BEFORE — `정상 경로` TC 를 만든 뒤 근거 슬롯을 NA 로 내리면:
@@ -473,7 +452,7 @@ def test_list_marks_testcase_whose_evidence_was_withdrawn(ready, monkeypatch, ca
     산출물이다. TC 는 **지우지 않는다** — 정정은 인터뷰의 정상 동작이고,
     사용자가 쌓아온 것을 도구가 조용히 버리면 안 된다.
     """
-    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    stdin_text(_payload())
     main(["tc", "add", "파티편성", "--family", "정상 경로",
           "--origin", "interview", "--json", "-"])
     _withdraw_core_action()
@@ -495,9 +474,9 @@ def test_list_still_reports_families_that_really_have_no_tc(ready, capsys):
     assert "근거 철회됨" not in out
 
 
-def test_list_stops_marking_once_evidence_is_restored(ready, monkeypatch, capsys):
+def test_list_stops_marking_once_evidence_is_restored(stdin_text, ready, monkeypatch, capsys):
     """슬롯을 다시 채우면 표시가 사라진다 — 표시가 영구 낙인이면 못 쓴다."""
-    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    stdin_text(_payload())
     main(["tc", "add", "파티편성", "--family", "정상 경로",
           "--origin", "interview", "--json", "-"])
     _withdraw_core_action()
@@ -511,7 +490,7 @@ def test_list_stops_marking_once_evidence_is_restored(ready, monkeypatch, capsys
     assert "정상 동작" in out
 
 
-def test_export_xlsx_marks_withdrawn_evidence(ready, monkeypatch, capsys, tmp_path):
+def test_export_xlsx_marks_withdrawn_evidence(stdin_text, ready, monkeypatch, capsys, tmp_path):
     """CLI 가 실제로 철회 정보를 익스포터까지 넘기는지 — 배선을 고정한다.
 
     `export_tc_excel` 이 아무리 잘 표시해도 `cmd_export` 가 안 넘기면 최종
@@ -519,7 +498,7 @@ def test_export_xlsx_marks_withdrawn_evidence(ready, monkeypatch, capsys, tmp_pa
     """
     from openpyxl import load_workbook
 
-    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    stdin_text(_payload())
     main(["tc", "add", "파티편성", "--family", "정상 경로",
           "--origin", "interview", "--json", "-"])
     _withdraw_core_action()

@@ -3,23 +3,7 @@ import json
 import pytest
 
 from qatc.cli import main
-from qatc.config import AppConfig
 from qatc.knowledge.store import KnowledgeStore
-
-
-@pytest.fixture()
-def cfg_env(tmp_path, monkeypatch):
-    """AppConfig.load() 가 임시 knowledge 디렉터리를 쓰게 만든다."""
-    kroot = tmp_path / "knowledge"
-    original = AppConfig.load
-
-    def patched(cls=AppConfig):
-        c = original()
-        c.knowledge_root = str(kroot)
-        return c
-
-    monkeypatch.setattr(AppConfig, "load", staticmethod(patched))
-    return kroot
 
 
 def test_init_creates_db_and_slots(cfg_env, capsys):

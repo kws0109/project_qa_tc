@@ -9,20 +9,6 @@ from qatc.config import AppConfig
 from qatc.console import display_width
 
 
-@pytest.fixture()
-def cfg_env(tmp_path, monkeypatch):
-    kroot = tmp_path / "knowledge"
-    original = AppConfig.load
-
-    def patched(cls=AppConfig):
-        c = original()
-        c.knowledge_root = str(kroot)
-        return c
-
-    monkeypatch.setattr(AppConfig, "load", staticmethod(patched))
-    return kroot
-
-
 def test_knowledge_lists_contents_with_coverage(cfg_env, capsys):
     main(["slot", "init", "파티편성", "--game", "starrail"])
     main(["slot", "set", "파티편성", "core_action", "--status", "filled", "--value", "v"])
@@ -66,14 +52,6 @@ def test_knowledge_on_missing_game_fails(cfg_env, capsys):
     assert "qatc slot init" in out
 
 
-class _StdIn:
-    def __init__(self, text: str):
-        self._text = text
-
-    def read(self) -> str:
-        return self._text
-
-
 _VALID_TC = '{"testcases":[{"title":"t","steps":["s"],"expected":["e"]}]}'
 
 
@@ -85,7 +63,7 @@ _VALID_TC = '{"testcases":[{"title":"t","steps":["s"],"expected":["e"]}]}'
     ["tc", "add", "없는컨텐츠", "--family", "정상 경로",
      "--origin", "interview", "--json", "-", "--game", "starrail"],
 ], ids=["slot-status", "tc-plan", "tc-list", "export", "tc-add"])
-def test_missing_content_error_always_names_next_action(cfg_env, capsys, monkeypatch, argv):
+def test_missing_content_error_always_names_next_action(stdin_text, cfg_env, capsys, monkeypatch, argv):
     """같은 조건을 알리는 다섯 명령이 모두 다음 조치를 함께 말해야 한다.
 
     `slot status` 만 `'qatc slot init'을 먼저 실행하세요.` 를 붙였고 나머지 넷은
@@ -94,7 +72,7 @@ def test_missing_content_error_always_names_next_action(cfg_env, capsys, monkeyp
     못 보는 결함이라(각각은 자기 태스크 안에서 일관돼 보인다) 다섯을 한 테스트로 묶는다.
     """
     main(["slot", "init", "다른컨텐츠", "--game", "starrail"])
-    monkeypatch.setattr("sys.stdin", _StdIn(_VALID_TC))
+    stdin_text(_VALID_TC)
     capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
 
     assert main(argv) == 1
@@ -226,3 +204,24 @@ def test_non_lock_operational_error_still_shows_the_real_cause(cfg_env, capsys, 
     out = capsys.readouterr().out
     assert "no such table" in out
     assert "다른 qatc 프로세스" not in out
+
+
+# --- 픽스처 격리 (이월 #14 · Minor 7) ------------------------------------
+
+
+def test_cfg_env_never_reads_the_real_config_file(cfg_env, tmp_path, monkeypatch):
+    """픽스처가 개발자 기계의 설정 파일을 읽으면 안 된다.
+
+    예전 세 벌은 진짜 `AppConfig.load()` 를 먼저 부른 뒤 `knowledge_root` 만
+    덮어썼다. 그래서 실제 ``%APPDATA%/qatc/config.json`` 의 `profiles_dir` 가
+    테스트로 새고, `user_config_dir()` 이 그 폴더를 만들기까지 했다.
+    `config_file()` 이 호출되면 즉시 실패하게 만들어 그 회귀를 잡는다.
+    """
+    def _boom():
+        raise AssertionError("테스트가 실제 설정 파일 경로를 읽었다")
+
+    monkeypatch.setattr(AppConfig, "config_file", staticmethod(_boom))
+
+    cfg = AppConfig.load()
+    assert Path(cfg.knowledge_root) == cfg_env
+    assert Path(cfg.profiles_dir).is_relative_to(tmp_path)
