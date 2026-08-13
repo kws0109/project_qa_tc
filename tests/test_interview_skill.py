@@ -5,9 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from qatc.cli import build_parser
+from qatc.cli import build_parser, main
+from qatc.knowledge.models import SlotStatus
 
-SKILL = Path(__file__).resolve().parents[1] / ".claude" / "skills" / "interview" / "SKILL.md"
+ROOT = Path(__file__).resolve().parents[1]
+SKILL = ROOT / ".claude" / "skills" / "interview" / "SKILL.md"
+README = ROOT / "README.md"
 
 
 def test_skill_file_exists():
@@ -98,3 +101,80 @@ def test_skill_uses_allowlisted_executable_form():
             f"allowlist에 없는 호출: {inv!r} — "
             f".claude/settings.json 의 permissions.allow 에 접두사를 추가하세요"
         )
+
+
+# --- 문서가 주장하는 것과 코드가 하는 것 (Minor 15 · 16 · 18 · 20) --------
+
+
+def test_skill_step1_branches_on_the_real_cli_messages(cfg_env, capsys):
+    """1단계 분기는 CLI가 **실제로 내는 문구**를 근거로 갈라져야 한다.
+
+    예전 SKILL.md 는 "컨텐츠가 없다는 오류가 나오면 → slot init" 한 줄뿐이었는데,
+    신규 컨텐츠에서 가장 흔한 실제 출력은
+    `'X' 컨텐츠를 가진 게임 DB가 없습니다. --game 으로 지정하세요.` 다 —
+    **메시지 자신이 정반대(=--game 을 붙여 다시 부르라)를 지시**하므로 모델이
+    턴을 하나 버린다. 세 문구를 실제로 만들어 스킬이 전부 다루는지 확인한다.
+    문구를 고치면 이 테스트가 깨져 스킬도 함께 고치게 된다.
+    """
+    text = SKILL.read_text(encoding="utf-8")
+    seen = []
+
+    # (1) 지식 DB가 하나도 없을 때
+    assert main(["slot", "status", "신규컨텐츠"]) == 1
+    seen.append(capsys.readouterr().out.strip())
+
+    # (2) DB는 있는데 어디에도 그 컨텐츠가 없을 때 — 신규 컨텐츠의 최빈 경로
+    main(["slot", "init", "다른컨텐츠", "--game", "starrail"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+    assert main(["slot", "status", "신규컨텐츠"]) == 1
+    seen.append(capsys.readouterr().out.strip())
+
+    # (3) --game 을 줬는데 그 컨텐츠가 없을 때
+    assert main(["slot", "status", "신규컨텐츠", "--game", "starrail"]) == 1
+    seen.append(capsys.readouterr().out.strip())
+
+    assert len(set(seen)) == 3, seen      # 정말 서로 다른 세 문구인지
+    for msg in seen:
+        quoted = msg.replace("'신규컨텐츠'", "'<컨텐츠>'")
+        assert quoted in text, f"SKILL.md 가 다루지 않는 1단계 문구: {quoted!r}"
+
+
+def test_skill_says_the_game_name_comes_from_the_user(cfg_env):
+    """`<게임>` 을 어떻게 정하는지 1단계가 말해야 한다.
+
+    1단계는 `--game` 없이 `slot status` 를 부른 뒤 곧바로
+    `slot init ... --game <게임>` 을 요구한다. 출처가 없으면 모델이 추측하는데,
+    `--game` 은 `profiles/` 와 대조되지 않으므로 오타가 조용히 새 DB를 만든다.
+    """
+    text = SKILL.read_text(encoding="utf-8")
+    step1 = text[text.index("## 1단계"):text.index("## 2단계")]
+    assert "사용자에게 묻는다" in step1
+
+
+def test_every_slot_status_choice_is_documented():
+    """`--status` 의 선택지는 코드가 정한다 — 문서가 하나라도 빠뜨리면 안 된다.
+
+    `--status empty` 는 실질적인 **되돌리기**인데 README·SKILL.md 어디에도
+    없었다. `SlotStatus` 를 진실 원천으로 삼아 전수 대조한다.
+    """
+    skill = SKILL.read_text(encoding="utf-8")
+    readme = README.read_text(encoding="utf-8")
+    for status in SlotStatus:
+        assert f"--status {status.value}" in skill, f"SKILL.md: {status.value}"
+        assert f"--status {status.value}" in readme, f"README: {status.value}"
+
+
+def test_readme_tells_the_user_that_knowledge_output_is_gitignored():
+    """`knowledge/` 는 사용자가 매일 만드는 산출물이 쌓이는 곳이다.
+
+    README 는 `sessions/`(이제 아무도 안 쓰는 폴더)는 설명하면서 정작 이쪽은
+    말하지 않았다.
+    """
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "/knowledge/" in gitignore          # 전제가 사실인지 먼저 확인
+
+    readme = README.read_text(encoding="utf-8")
+    start = readme.index("## 산출물이 어디에 쌓이는가")
+    section = readme[start:readme.index("---", start)]
+    assert "knowledge/" in section
+    assert ".gitignore" in section

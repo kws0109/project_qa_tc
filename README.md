@@ -54,6 +54,9 @@ pip install -e .
 qatc slot init <컨텐츠> --game starrail --types 편성   # 지식 슬롯 세트 생성
 qatc slot status <컨텐츠> --json                        # 남은 항목 확인 (질문 전 매번 호출)
 qatc slot set <컨텐츠> <키> --status filled --value "..."  # 슬롯 값 기록
+qatc slot set <컨텐츠> <키> --status unknown              # 사용자가 모른다고 답함
+qatc slot set <컨텐츠> <키> --status na                   # 이 컨텐츠엔 해당 없음
+qatc slot set <컨텐츠> <키> --status empty                # 되돌리기 (다시 물어볼 항목이 된다)
 qatc slot add <컨텐츠> <키> --hint "..." --family "..."    # 유형에 없던 슬롯 추가
 qatc tc plan <컨텐츠>                                    # 만들 수 있는 TC 계열과 제외된 계열
 qatc tc add <컨텐츠> --family "정상 경로" --origin interview --json -  # TC 저장
@@ -65,6 +68,20 @@ qatc config                                              # 설정·프로파일 
 
 `--game` 은 컨텐츠 이름이 한 게임의 지식 저장소에서만 발견되면 생략할 수
 있습니다. 여러 게임에 같은 이름의 컨텐츠가 있으면 명시해야 합니다.
+
+`--status empty` 는 사실상 **되돌리기**입니다. 잘못 기록했거나 사용자가 답을
+바꾸면 이걸로 슬롯을 다시 열 수 있습니다. 이미 그 근거로 만든 TC는 **지우지
+않고** `tc list` 와 xlsx에서 `근거 철회됨` 으로 표시됩니다.
+
+---
+
+## 산출물이 어디에 쌓이는가
+
+지식 DB와 xlsx는 `knowledge/` 아래에 게임별로 쌓입니다
+(`knowledge/starrail.db`, `knowledge/starrail_파티편성_TC.xlsx`).
+**이 폴더는 `.gitignore` 에 있습니다** — 담당자의 실제 게임 지식과 산출물이라
+저장소에 커밋하지 않습니다. 위치를 바꾸려면 `qatc config` 가 알려주는 설정
+파일의 `knowledge_root` 를 고치세요.
 
 ---
 
@@ -78,5 +95,5 @@ qatc config                                              # 설정·프로파일 
 Claude Code가 인터뷰를 진행할 때 매 슬롯 기록마다 권한 승인 창이 뜨지 않도록
 하는 전제 조건입니다.
 
-`sessions/` 는 `.gitignore` 에 있습니다 — 이전 녹화 파이프라인이 쓰던 폴더로,
+`sessions/` 도 `.gitignore` 에 있습니다 — 이전 녹화 파이프라인이 쓰던 폴더로,
 지금은 아무 코드도 읽거나 쓰지 않습니다.

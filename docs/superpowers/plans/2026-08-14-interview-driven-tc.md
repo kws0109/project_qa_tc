@@ -8,6 +8,19 @@
 
 **Tech Stack:** Python 3.11+ · stdlib `sqlite3` · `argparse` · `openpyxl` · `pytest`
 
+> **2026-08-14 덧붙임 — 본문의 코드 인용은 실행 시점 기준이다.**
+>
+> 이 계획서는 이력이므로 본문은 그대로 둔다. 다만 리뷰 반영 라운드에서 바뀐
+> 것이 있어 코드와 대조할 때 참고하라.
+>
+> - Task 7 · Task 9 단계(약 2012 · 2099 · 2557행)가 보여주는 슬롯 상태 문구 3벌
+>   (`{"empty": "비어있음", "unknown": "사용자가 모름", "na": "해당 없음"}` 류)은
+>   지금 코드에 없다. `qatc/knowledge/models.py` 의 `SLOT_STATUS_LABEL` 한 곳으로
+>   통합됐고, 문구도 `슬롯이 비어 있음` · `사용자가 모른다고 답함` ·
+>   `해당 없음으로 표시됨` 으로 통일됐다.
+> - 슬롯 상태 문구를 화면에 쓰는 자리는 이제 `FamilySkip.reason` 을 거친다 —
+>   미등록 계열은 상태가 아니라 계열 이름이 문제라 사유가 다르기 때문이다.
+
 ## Global Constraints
 
 - Windows 전용. 경로는 `pathlib.Path` 로만 다룬다.
