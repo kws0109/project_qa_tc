@@ -68,6 +68,30 @@ def test_na_slot_leaves_open_list(cfg_env, capsys):
     assert all(s["key"] != "cost" for s in data["open"])
 
 
+def test_status_filled_counts_only_filled_not_unknown_or_na(cfg_env, capsys):
+    """`filled` 는 FILLED 만 센다 — UNKNOWN·NA 는 근거가 아니다.
+
+    이 설계 전체가 "FILLED 만 근거다" 위에 서 있는데, 그 구분이 게이트에서는
+    봉인돼 있고 **사용자·모델이 실제로 보는 진척 표시에서는 안 봉인돼 있었다.**
+    `s.status is SlotStatus.FILLED` 를 `s.is_closed` 로 바꿔도 109개가 전부
+    통과했다 (뮤테이션 M30 생존). 그 상태에서는 절반이 "모름"인 컨텐츠가
+    `15/15 채움` 으로 보고된다.
+    """
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    main(["slot", "set", "파티편성", "core_action", "--status", "filled",
+          "--value", "파티를 짠다"])
+    main(["slot", "set", "파티편성", "cost", "--status", "unknown"])
+    main(["slot", "set", "파티편성", "failure", "--status", "na"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    main(["slot", "status", "파티편성", "--json"])
+    data = json.loads(capsys.readouterr().out)
+    # 닫힌 슬롯은 3개지만 근거는 1개다 — is_closed 로 세면 3이 나온다
+    assert len(data["closed"]) == 3
+    assert data["filled"] == 1
+    assert data["total"] == 10
+
+
 def test_set_unknown_key_fails_and_lists_keys(cfg_env, capsys):
     main(["slot", "init", "파티편성", "--game", "starrail"])
     rc = main(["slot", "set", "파티편성", "없는키", "--status", "filled", "--value", "x"])

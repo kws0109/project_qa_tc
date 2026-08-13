@@ -34,6 +34,26 @@ def test_knowledge_lists_contents_with_coverage(cfg_env, capsys):
     assert by_name["워프"]["total"] == 14
 
 
+def test_knowledge_filled_counts_only_filled_not_unknown_or_na(cfg_env, capsys):
+    """`knowledge` 의 커버리지 분자도 FILLED 만 센다.
+
+    `cmd_knowledge` 는 `slot status` 와 같은 집계를 따로 한 번 더 계산한다.
+    한쪽만 고치면 같은 게임에 대해 두 명령이 다른 숫자를 말한다.
+    """
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    main(["slot", "set", "파티편성", "core_action", "--status", "filled", "--value", "v"])
+    main(["slot", "set", "파티편성", "cost", "--status", "unknown"])
+    main(["slot", "set", "파티편성", "failure", "--status", "na"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    assert main(["knowledge", "--game", "starrail", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    row = {c["content"]: c for c in data["contents"]}["파티편성"]
+    # 슬롯 3개가 닫혔지만 근거는 1개다 — is_closed 로 세면 3이 나온다
+    assert row["filled"] == 1
+    assert row["total"] == 10
+
+
 def test_knowledge_on_missing_game_fails(cfg_env, capsys):
     rc = main(["knowledge", "--game", "없는게임"])
     assert rc == 1
