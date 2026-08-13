@@ -61,13 +61,41 @@ def test_export_lists_skipped_families(tmp_path):
     assert "재화 부족" in row
 
 
+def test_export_survives_control_characters_in_skipped_sheet(tmp_path):
+    # clean_cell 이 _sheet_skipped 에서 빠지면 이 케이스가 IllegalCharacterError 로 죽는다 —
+    # prompt_hint 는 인터뷰 중 사람이 받아적거나 OCR 로 채워질 수 있는 자유 텍스트다.
+    skip = FamilySkip("재화 부족", "cost", "무엇을\x03소모하는가", SlotStatus.EMPTY)
+    p = export_tc_excel("파티편성", [_tc()], [skip], tmp_path / "out.xlsx")
+    ws = load_workbook(p)["미확인 항목"]
+    row = [c.value for c in ws[2]]
+    assert "무엇을소모하는가" in row
+    assert not any(v is not None and "\x03" in str(v) for v in row)
+
+
+def _summary_value(ws, label: str) -> str:
+    for row in ws.iter_rows(min_row=2):
+        if row[0].value == label:
+            return row[1].value
+    raise AssertionError(f"'{label}' 행을 요약 시트에서 찾을 수 없습니다")
+
+
 def test_export_summary_counts_by_origin(tmp_path):
     cases = [_tc(origin=TCOrigin.INTERVIEW), _tc(origin=TCOrigin.INFERRED)]
     p = export_tc_excel("파티편성", cases, [], tmp_path / "out.xlsx")
     ws = load_workbook(p)["요약"]
-    text = "\n".join(str(c.value) for row in ws.iter_rows() for c in row if c.value)
-    assert "인터뷰" in text
-    assert "추론됨" in text
+    # "읽는 방법" 설명 칸에 '인터뷰'·'추론됨' 문구가 항상 들어있어 시트 전체 텍스트를
+    # 뒤지면 데이터가 비어 있어도 통과한다. 라벨로 실제 행을 찾아 집계값을 확인한다.
+    assert _summary_value(ws, "출처별") == "인터뷰 1, 추론됨 1"
+    assert _summary_value(ws, "유형별") == "정상 2"
+
+
+def test_export_survives_control_characters_in_summary_sheet(tmp_path):
+    # clean_cell 이 _sheet_summary 에서 빠지면 이 케이스가 IllegalCharacterError 로 죽는다.
+    p = export_tc_excel("파티\x03편성", [_tc()], [], tmp_path / "out.xlsx")
+    ws = load_workbook(p)["요약"]
+    values = [c.value for row in ws.iter_rows() for c in row]
+    assert "파티편성" in values
+    assert not any(v is not None and "\x03" in str(v) for v in values)
 
 
 def test_export_with_no_testcases_still_writes(tmp_path):
