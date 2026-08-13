@@ -502,13 +502,14 @@ class Transition:
 
 
 class TCOrigin(str, Enum):
-    """TC의 근거 출처. **INFERRED는 검증되지 않은 LLM 가설이다.**
+    """TC의 근거 출처. **INFERRED는 검증되지 않은 가설이다.**
 
-    이 구분이 없으면 LLM 환각이 정식 TC로 둔갑한다. 엑셀에서 색으로 구분된다.
+    이 구분이 없으면 추측이 정식 TC로 둔갑한다. 엑셀에서 색으로 구분된다.
     """
 
-    RECORDED = "기록됨"
-    INFERRED = "추론됨"
+    RECORDED = "기록됨"      # 녹화에서 관측됨 (녹화 파이프라인 전용)
+    INTERVIEW = "인터뷰"     # 사용자가 진술한 내용에 직접 근거
+    INFERRED = "추론됨"      # 진술에서 도출
     USER = "사용자추가"
 
 
