@@ -19,7 +19,7 @@ import sys
 
 import pytest
 
-from qatc.console import _p
+from qatc.console import _p, display_width, pad
 
 
 def _cp949_stream() -> tuple[io.BytesIO, io.TextIOWrapper]:
@@ -107,3 +107,54 @@ def test_stdout_encoding_none_does_not_raise(monkeypatch):
 
     assert stream.encoding is None
     assert "".join(stream.written)  # 폴백에서 실제로 뭔가 기록됐다
+
+
+# --- 동아시아 문자 폭 (Minor 11) -----------------------------------------
+
+
+def test_display_width_counts_wide_characters_as_two():
+    """한글·전각은 콘솔에서 두 칸을 먹는다. `len()` 은 그걸 모른다."""
+    assert display_width("abc") == 3
+    assert display_width("컨텐츠") == 6
+    assert display_width("파티 편성") == 9      # 한글 4자 × 2 + 공백 1
+    assert display_width("") == 0
+
+
+def test_pad_fills_to_the_requested_display_width():
+    """`f"{s:<14}"` 는 한글을 폭 1로 세어 실제 콘솔에서 열이 어긋난다."""
+    for text in ("abc", "컨텐츠", "파티 편성", "가나다라마바사"):
+        assert display_width(pad(text, 14)) == 14, text
+
+
+def test_pad_right_aligns_by_display_width():
+    padded = pad("채움", 7, align="right")
+    assert display_width(padded) == 7
+    assert padded.endswith("채움")
+    assert padded.startswith(" ")
+
+
+def test_pad_never_truncates():
+    """폭을 넘겨도 자르지 않는다 — 컨텐츠 이름이 잘려 나가면 안 된다."""
+    long = "아주아주긴컨텐츠이름입니다"
+    assert pad(long, 4) == long
+
+
+def test_skipped_profile_notice_survives_the_console_codepage(tmp_path, monkeypatch):
+    """`load_profiles` 의 "건너뜁니다" 안내가 콘솔을 죽이면 안 된다 (Minor 1).
+
+    이 안내만 맨 `print()` 로 남아 있었다 (`profiles.py:49`). pytest 는 표준출력을
+    UTF-8 로 캡처하므로 그 위반이 테스트에서 **보이지 않았다** — `_p` 를 다시
+    `print` 로 되돌려도 전체 스위트가 통과했다. 실제 한국어 Windows 콘솔은
+    cp949 라, 프로파일 파일 이름에 코드페이지 밖 문자가 하나만 있어도
+    `qatc config` 가 UnicodeEncodeError 로 죽는다. 여기서는 그 콘솔을 재현한다.
+    """
+    from qatc.profiles import load_profiles
+
+    (tmp_path / "깨진✓.yaml").write_text("key: [닫히지 않음", encoding="utf-8")
+
+    buf, stream = _cp949_stream()
+    monkeypatch.setattr(sys, "stdout", stream)
+
+    assert load_profiles(tmp_path) == {}     # 맨 print 였다면 여기서 예외로 죽는다
+    stream.flush()
+    assert "건너뜁니다" in buf.getvalue().decode("cp949")

@@ -50,6 +50,27 @@ CREATE TABLE IF NOT EXISTS testcases (
 """
 
 
+#: DB 잠금 안내 (설계 스펙 §7). `timeout=30.0` 은 재시도까지만 담당하고,
+#: 그 30초를 다 쓰고 나면 sqlite 는 `database is locked` 만 던진다. 이 CLI 의
+#: 호출자는 인터뷰를 진행하는 모델이라, 원인과 다음 조치가 없으면 무엇을 할지
+#: 모른다.
+DB_LOCKED_HINT = (
+    "지식 DB가 잠겨 있습니다 — 다른 qatc 프로세스가 실행 중일 수 있습니다. "
+    "그 명령이 끝나기를 기다렸다가 다시 실행하세요."
+)
+
+
+def is_locked_error(exc: sqlite3.OperationalError) -> bool:
+    """sqlite 의 잠금 계열 오류인가.
+
+    `sqlite3` 는 잠금 전용 예외 타입을 주지 않고 `OperationalError` 하나로
+    묶으므로 메시지로 판별할 수밖에 없다. 잠금이 아닌 `OperationalError`
+    (예: `no such table`)까지 잠금으로 뭉개면 진단이 불가능해진다.
+    """
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
 class KnowledgeStore:
     """게임 하나의 지식 DB."""
 

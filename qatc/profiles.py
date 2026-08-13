@@ -18,6 +18,8 @@ from typing import Any
 
 import yaml
 
+from .console import _p
+
 
 @dataclass
 class GameProfile:
@@ -46,5 +48,5 @@ def load_profiles(profiles_dir: Path | str) -> dict[str, GameProfile]:
             prof = GameProfile.load(f)
             out[prof.key] = prof
         except (yaml.YAMLError, KeyError, ValueError, OSError) as exc:
-            print(f"[프로파일] {f.name} 을(를) 건너뜁니다: {exc}")
+            _p(f"[프로파일] {f.name} 을(를) 건너뜁니다: {exc}")
     return out

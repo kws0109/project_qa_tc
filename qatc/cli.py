@@ -16,10 +16,12 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import sys
 
 from .config import AppConfig
 from .console import _p
+from .knowledge.store import DB_LOCKED_HINT, is_locked_error
 
 
 def cmd_config(args: argparse.Namespace, cfg: AppConfig) -> int:
@@ -80,6 +82,14 @@ def main(argv: list[str] | None = None) -> int:
             _p(f"오류: {exc.code}")
             return 1
         raise
+    except sqlite3.OperationalError as exc:
+        # 스펙 §7: 동시 실행으로 DB가 잠기면 그 사실을 말해준다.
+        # 잠금이 아닌 DB 오류는 원인을 그대로 보여야 진단이 된다.
+        _p(f"오류: {DB_LOCKED_HINT}" if is_locked_error(exc)
+           else f"\n오류: {type(exc).__name__}: {exc}")
+        if "--debug" in sys.argv:
+            raise
+        return 1
     except Exception as exc:
         _p(f"\n오류: {type(exc).__name__}: {exc}")
         if "--debug" in sys.argv:

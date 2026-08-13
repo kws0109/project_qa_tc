@@ -1,9 +1,12 @@
 import json
+import sqlite3
+from pathlib import Path
 
 import pytest
 
 from qatc.cli import build_parser, main
 from qatc.config import AppConfig
+from qatc.console import display_width
 
 
 @pytest.fixture()
@@ -131,3 +134,95 @@ def test_config_dispatches_through_main(monkeypatch):
 
     assert cli.main(["config"]) == 0
     assert len(calls) == 1
+
+
+# --- 표 정렬 (Minor 11) ---------------------------------------------------
+
+
+def test_knowledge_table_columns_line_up_for_korean_names(cfg_env, capsys):
+    """한글 이름과 ASCII 이름이 섞여도 숫자 칸이 같은 열에서 시작해야 한다.
+
+    `f"{'컨텐츠':<14}"` 는 한글을 폭 1로 세므로 실제 콘솔(폭 2)에서는 한글
+    이름 행만 오른쪽으로 밀린다 — 커버리지 표를 눈으로 훑을 수 없게 된다.
+    """
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    main(["slot", "init", "warp", "--game", "starrail"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    assert main(["knowledge", "--game", "starrail"]) == 0
+    rows = [ln for ln in capsys.readouterr().out.splitlines()
+            if ln.startswith("  ") and "/" in ln and "-" not in ln]
+    assert len(rows) == 2, rows
+    starts = {display_width(ln[: ln.index("/")]) for ln in rows}
+    assert len(starts) == 1, f"열이 어긋난다: {starts}"
+
+
+# --- export 기본 파일명 (Minor 12) ---------------------------------------
+
+
+@pytest.mark.parametrize("name", ["파티/편성", "전투:보스", "물음표?", "별*표"])
+def test_export_default_filename_sanitizes_forbidden_characters(cfg_env, capsys, name):
+    """컨텐츠 이름을 파일명에 그대로 넣으면 엉뚱한 하위 폴더가 생긴다.
+
+    실측: `slot init "파티/편성"` 후 `export` →
+    `.../starrail_파티\편성_TC.xlsx` 가 되고 `mkdir(parents=True)` 덕에
+    rc=0 이라 아무도 눈치채지 못한 채 `starrail_파티` 폴더가 남는다.
+    """
+    main(["slot", "init", name, "--game", "starrail"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    assert main(["export", name, "--game", "starrail"]) == 0
+    out = capsys.readouterr().out.strip()
+    path = Path(out.split("✓ ", 1)[1].split("  (", 1)[0])
+
+    assert path.exists()
+    assert path.parent == cfg_env               # 하위 폴더를 만들지 않았다
+    assert not any(c in path.name for c in '\\/:*?"<>|')
+    assert [d for d in cfg_env.iterdir() if d.is_dir()] == []
+
+
+def test_export_out_option_is_used_verbatim(cfg_env, capsys, tmp_path):
+    """`--out` 은 사용자가 명시한 경로다 — 마음대로 고치지 않는다."""
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    target = tmp_path / "내가 정한 폴더" / "결과.xlsx"
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+    assert main(["export", "파티편성", "--out", str(target)]) == 0
+    assert target.exists()
+
+
+# --- DB 잠금 (Minor 13, 스펙 §7) -----------------------------------------
+
+
+def _raise(exc):
+    def _fn(args, cfg):
+        raise exc
+    return _fn
+
+
+def test_locked_db_says_another_qatc_process_is_running(cfg_env, capsys, monkeypatch):
+    """스펙 §7 이 요구하는 문구가 실제로 나와야 한다.
+
+    `timeout=30.0` 만 있어 진짜 잠금은
+    `오류: OperationalError: database is locked` 로 새어나왔다 — 인터뷰를
+    진행하는 모델에게 "무엇을 하라"가 전혀 없는 메시지다.
+    """
+    import qatc.cli_knowledge as ck
+
+    monkeypatch.setattr(ck, "cmd_slot_status",
+                        _raise(sqlite3.OperationalError("database is locked")))
+    assert main(["slot", "status", "아무거나"]) == 1
+    out = capsys.readouterr().out
+    assert "다른 qatc 프로세스가 실행 중" in out
+    assert "OperationalError" not in out
+
+
+def test_non_lock_operational_error_still_shows_the_real_cause(cfg_env, capsys, monkeypatch):
+    """잠금이 아닌 DB 오류까지 "다른 프로세스" 로 뭉개면 진단이 불가능해진다."""
+    import qatc.cli_knowledge as ck
+
+    monkeypatch.setattr(ck, "cmd_slot_status",
+                        _raise(sqlite3.OperationalError("no such table: slots")))
+    assert main(["slot", "status", "아무거나"]) == 1
+    out = capsys.readouterr().out
+    assert "no such table" in out
+    assert "다른 qatc 프로세스" not in out

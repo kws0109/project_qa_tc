@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
 from .config import AppConfig
-from .console import _p
+from .console import _p, pad
 from .knowledge.gate import (
     FAMILY_META,
     plan_families,
@@ -71,6 +72,24 @@ def _no_content(content: str) -> str:
     return f"컨텐츠 '{content}'가 없습니다. 'qatc slot init'을 먼저 실행하세요."
 
 
+#: Windows 파일명에 쓸 수 없는 문자와 제어문자.
+_FORBIDDEN_IN_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def _safe_filename_part(text: str) -> str:
+    """컨텐츠·게임 이름을 파일명 조각으로 바꾼다.
+
+    실측: `slot init "파티/편성"` 후 `export` 의 기본 경로가
+    `.../starrail_파티\\편성_TC.xlsx` 가 되어, `mkdir(parents=True)` 가
+    조용히 `starrail_파티` 폴더를 만들고 rc=0 으로 끝났다. 사용자는 지식
+    폴더에 파일이 있을 거라 생각하는데 없다.
+
+    끝의 마침표·공백도 지운다 — Windows 는 그런 이름을 만들 수 없다.
+    """
+    cleaned = _FORBIDDEN_IN_FILENAME.sub('_', text).rstrip('. ')
+    return cleaned or '이름없음'
+
+
 def _status_payload(store: KnowledgeStore, content: str) -> dict:
     slots = store.slots(content)
     planned, skipped = plan_families(slots)
@@ -113,7 +132,7 @@ def cmd_slot_status(args: argparse.Namespace, cfg: AppConfig) -> int:
     if payload["open"]:
         _p("\n남은 항목:")
         for s in payload["open"]:
-            _p(f"  {s['key']:<16} {s['hint']}")
+            _p(f"  {pad(s['key'], 16)} {s['hint']}")
     else:
         _p("\n모든 항목이 채워졌습니다. 'qatc tc plan'으로 생성 대상을 확인하세요.")
     return 0
@@ -223,11 +242,11 @@ def cmd_tc_plan(args: argparse.Namespace, cfg: AppConfig) -> int:
 
     _p(f"[{args.content}] 생성 대상 계열 {len(planned)}개")
     for p in planned:
-        _p(f"  {p.family:<16} {p.slot_key:<16} {p.kind.value} / {p.priority.value}")
+        _p(f"  {pad(p.family, 16)} {pad(p.slot_key, 16)} {p.kind.value} / {p.priority.value}")
     if skipped:
         _p("\n제외됨:")
         for s in skipped:
-            _p(f"  {s.family:<16} {s.slot_key:<16} {s.reason}")
+            _p(f"  {pad(s.family, 16)} {pad(s.slot_key, 16)} {s.reason}")
     return 0
 
 
@@ -416,7 +435,7 @@ def cmd_tc_list(args: argparse.Namespace, cfg: AppConfig) -> int:
             s = by_family.get(family)
             where = (f"{s.slot_key} ({s.prompt_hint}) · {s.reason}" if s
                      else "이 계열의 근거 슬롯이 더 이상 없습니다")
-            _p(f"   {family:<16} ← {where}")
+            _p(f"   {pad(family, 16)} ← {where}")
         _p("\n   슬롯을 다시 채우면 표시가 사라집니다. "
            "필요 없어진 TC는 내용을 확인하고 직접 정리하세요.")
 
@@ -426,7 +445,7 @@ def cmd_tc_list(args: argparse.Namespace, cfg: AppConfig) -> int:
     if open_skips:
         _p("\n⚠ 다음 항목이 미확인이라 해당 TC가 없습니다")
         for s in open_skips:
-            _p(f"   {s.slot_key:<16} ({s.prompt_hint}) → {s.family} TC 없음  "
+            _p(f"   {pad(s.slot_key, 16)} ({s.prompt_hint}) → {s.family} TC 없음  "
                f"[{s.reason}]")
         _p("\n   이어서 채우려면 Claude Code에서 인터뷰를 재개하세요.")
     return 0
@@ -461,10 +480,11 @@ def cmd_knowledge(args: argparse.Namespace, cfg: AppConfig) -> int:
         return 0
 
     _p(f"[{args.game}] 컨텐츠 {len(rows)}개\n")
-    _p(f"  {'컨텐츠':<14} {'채움':>7}  {'계열':>7}  {'TC':>4}")
+    _p(f"  {pad('컨텐츠', 14)} {pad('채움', 7, align='right')}  "
+       f"{pad('계열', 7, align='right')}  {pad('TC', 4, align='right')}")
     _p(f"  {'-' * 40}")
     for r in rows:
-        _p(f"  {r['content']:<14} {r['filled']:>3}/{r['total']:<3}  "
+        _p(f"  {pad(r['content'], 14)} {r['filled']:>3}/{r['total']:<3}  "
            f"{r['planned_families']:>3}/{r['planned_families'] + r['skipped_families']:<3}  "
            f"{r['testcases']:>4}")
     return 0
@@ -487,7 +507,11 @@ def cmd_export(args: argparse.Namespace, cfg: AppConfig) -> int:
     _, skipped = plan_families(slots)
     withdrawn = withdrawn_families(slots, {tc.category_minor for tc in cases})
 
-    out = Path(args.out) if args.out else cfg.knowledge_path / f"{game}_{args.content}_TC.xlsx"
+    out = (
+        Path(args.out) if args.out
+        else cfg.knowledge_path / f"{_safe_filename_part(game)}"
+                                  f"_{_safe_filename_part(args.content)}_TC.xlsx"
+    )
     path = export_tc_excel(args.content, cases, skipped, out, withdrawn)
     _p(f"✓ {path}  (TC {len(cases)}건 · 미확인 {len(skipped)}건"
        + (f" · 근거 철회 {len(withdrawn)}계열" if withdrawn else "") + ")")

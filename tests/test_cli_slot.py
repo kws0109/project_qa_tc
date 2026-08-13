@@ -256,3 +256,20 @@ def test_int_coded_system_exit_still_propagates(cfg_env, monkeypatch):
     with pytest.raises(SystemExit) as exc_info:
         main(["slot", "status", "아무거나"])
     assert exc_info.value.code == 3
+
+
+def test_add_slot_rejects_whitespace_only_family(cfg_env, capsys):
+    """공백만 있는 `--family` 도 죽은 슬롯을 만든다 (Minor 19 후속).
+
+    라운드 1a 가 빈 문자열을 막았지만, `--value` 와 달리 공백만 있는 경우는
+    확인되지 않았다. `"  "` 는 `FAMILY_META` 의 키가 아니므로 같은 검사에
+    걸려야 하고, 그 사실을 여기서 고정한다.
+    """
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+    rc = main(["slot", "add", "파티편성", "죽은슬롯", "--hint", "h", "--family", "  "])
+    assert rc == 1
+    assert "정의된 계열" in capsys.readouterr().out
+
+    main(["slot", "status", "파티편성", "--json"])
+    assert json.loads(capsys.readouterr().out)["total"] == 10
