@@ -231,8 +231,10 @@ def _validate_item(item: object, i: int) -> str | None:
 
     missing = [k for k in _REQUIRED_FIELDS if not item.get(k)]
     if missing:
+        # 빠진 것만 나열한다 — 필수 필드 세 개를 항상 찍으면 모델이 어느 것을
+        # 더해야 하는지 다시 추론해야 한다.
         return (f"testcases[{i}] 에 필수 필드가 없습니다 — {', '.join(missing)}. "
-                f"{', '.join(_REQUIRED_FIELDS)} 를 모두 채워 다시 주세요.")
+                f"빠진 필드를 채워 다시 주세요.")
 
     for field in _LIST_FIELDS:
         value = item[field]

@@ -84,12 +84,41 @@ def test_add_rejects_unknown_family(ready, monkeypatch, capsys):
 
 
 def test_add_rejects_missing_required_field(ready, monkeypatch, capsys):
+    """필수 필드가 두 개 빠지면 실제 거부 메시지에 **둘 다** 나와야 한다.
+
+    예전 판은 `rc == 1` 과 `"steps" in out` 만 봤고, 그 두 단언은 **검증이 0인
+    구현에서도 둘 다 참**이었다 — 검증 블록을 통째로 지우면 `item["steps"]` 에서
+    `KeyError: 'steps'` 가 나고 `cli.py` 의 범용 핸들러가 그것을
+    `오류: KeyError: 'steps'` 로 출력하며 rc=1 을 돌려주기 때문이다.
+    (실측: 블록 삭제 후 `pytest tests/test_cli_tc.py` → 13 passed.)
+    실제 메시지를 고정해 그 구멍을 막는다.
+    """
     bad = json.dumps({"testcases": [{"title": "제목만 있음"}]}, ensure_ascii=False)
     monkeypatch.setattr("sys.stdin", _StdIn(bad))
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
-    assert "steps" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "필수 필드가 없습니다" in out
+    assert "steps" in out
+    assert "expected" in out
+    assert "KeyError" not in out          # 날 예외가 아니라 우리 메시지여야 한다
+
+
+def test_add_missing_field_message_names_only_what_is_missing(ready, monkeypatch, capsys):
+    """빠진 필드만 나열한다.
+
+    필수 필드 세 개를 항상 찍는 구현으로는 통과할 수 없어야, 메시지가 실제로
+    무엇이 빠졌는지 계산한다는 것이 고정된다.
+    """
+    bad = json.dumps({"testcases": [{"title": "t", "steps": ["s"]}]}, ensure_ascii=False)
+    monkeypatch.setattr("sys.stdin", _StdIn(bad))
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "interview", "--json", "-"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "expected" in out
+    assert "steps" not in out             # 있는 필드는 언급하지 않는다
 
 
 def _one(**over):
