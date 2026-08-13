@@ -1577,7 +1577,10 @@ from .console import _p
 
 이어서 `cli.py` 의 `main()` 에서 문자열 `SystemExit` 을 잡도록 고친다. `resolve_store()` 가
 안내 문구와 함께 `SystemExit` 을 던지는데, 지금의 `except SystemExit: raise` 는 그대로
-전파시켜 종료 코드도 1이 아니고 한글이 stderr 로 나가 Windows 코드페이지에서 깨진다.
+전파시켜 안내 문구가 **stderr** 로 나간다. Windows 기본 코드페이지에서 한글이 깨지고,
+`main()` 을 프로세스 안에서 호출하는 pytest 가 반환값을 받지 못한다.
+(CPython 최상위 핸들러가 문자열 인자 `SystemExit` 을 이미 종료 코드 1로 처리하므로
+종료 코드 자체는 문제가 아니다 — 출력 스트림과 in-process 호출 가능성이 이유다.)
 
 ```python
     except SystemExit as exc:
