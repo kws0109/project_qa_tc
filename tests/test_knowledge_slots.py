@@ -1,6 +1,6 @@
 import pytest
 
-from qatc.knowledge.slots import BASE_SLOTS, KNOWN_TYPES, TYPE_SLOTS, build_slot_set
+from qatc.knowledge.slots import BASE_SLOTS, KNOWN_TYPES, SlotSpec, TYPE_SLOTS, build_slot_set
 
 
 def test_base_slots_have_ten_entries_with_unique_keys():
@@ -75,3 +75,36 @@ def test_type_slot_keys_are_prefixed_to_avoid_base_collision():
     for t, specs in TYPE_SLOTS.items():
         for s in specs:
             assert s.key.startswith(f"{t}."), (t, s.key)
+
+
+def test_first_assembled_slot_wins_on_synthetic_key_collision(monkeypatch):
+    # 실제 배포 데이터에는 유형별 키가 전부 "유형." 접두사를 강제로 달고
+    # 있어서 base와도, 유형끼리도 진짜 키 충돌이 존재하지 않는다. 그래서
+    # test_duplicate_key_across_types_keeps_the_first 와
+    # test_base_slot_wins_over_type_slot_with_same_key 는 "먼저 조립된 것이
+    # 이긴다" 규칙이 "나중 것이 이긴다"로 뒤집혀도 실패하지 않는다 — 애초에
+    # 겹치는 키가 없어 dedup 분기 자체를 타지 않기 때문이다. 여기서는
+    # monkeypatch 로 TYPE_SLOTS 에 인위적인 충돌을 주입해 그 분기를 실제로
+    # 태워서 검증한다.
+
+    # 유형 vs 유형 충돌: 인자에 먼저 적힌 유형이 이겨야 한다. 양쪽 순서를
+    # 모두 확인해야 "이긴다" 판정이 인자 순서를 실제로 따르는지 알 수 있다.
+    fake_a = (SlotSpec("충돌.키", "A 유형의 힌트", "정상 경로"),)
+    fake_b = (SlotSpec("충돌.키", "B 유형의 힌트", "정상 경로"),)
+    monkeypatch.setitem(TYPE_SLOTS, "_fake_a", fake_a)
+    monkeypatch.setitem(TYPE_SLOTS, "_fake_b", fake_b)
+
+    won_ab = next(s for s in build_slot_set(["_fake_a", "_fake_b"]) if s.key == "충돌.키")
+    assert won_ab.prompt_hint == "A 유형의 힌트"
+
+    won_ba = next(s for s in build_slot_set(["_fake_b", "_fake_a"]) if s.key == "충돌.키")
+    assert won_ba.prompt_hint == "B 유형의 힌트"
+
+    # base vs 유형 충돌: base는 항상 먼저 조립되므로 어떤 유형을 넣어도
+    # base 쪽 prompt_hint가 살아남아야 한다.
+    fake_type = (SlotSpec("core_action", "가짜 유형의 core_action 힌트", "정상 경로"),)
+    monkeypatch.setitem(TYPE_SLOTS, "_fake_type", fake_type)
+
+    base_hint = next(s for s in BASE_SLOTS if s.key == "core_action").prompt_hint
+    won_base = next(s for s in build_slot_set(["_fake_type"]) if s.key == "core_action")
+    assert won_base.prompt_hint == base_hint
