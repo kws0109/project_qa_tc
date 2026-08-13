@@ -1,16 +1,12 @@
-"""게임 프로파일 — 게임마다 다른 창 탐색 규칙, 캡처 영역, 무시 영역, LLM 컨텍스트.
+"""게임 프로파일 — 게임 식별 정보와 LLM 컨텍스트.
 
-프로파일이 필요한 이유는 셋이다.
+지식 저장소는 게임 키(예: "starrail")로 나뉘고, 그 정체성이 여기 있다.
+``qatc config`` 가 사용 가능한 프로파일 목록을 보여줄 때 이 모듈을 쓴다.
 
-1. **창 탐색**: 게임마다 창 제목과 프로세스명이 다르다. 원신은 로케일에 따라
-   제목이 "原神"/"Genshin Impact"로 갈린다.
-2. **캡처 ROI**: 블루아카이브는 에뮬레이터 창이라 상단 툴바와 우측 사이드바를
-   잘라내야 게임 화면만 남는다.
-3. **무시 영역**: 시계, 프레임레이트, 핑 표시처럼 항상 변하는 HUD를 해시에서
-   빼지 않으면 같은 화면이 매번 다른 화면으로 잡힌다.
-
-``static_ignore``는 사람이 아는 것(시계 위치)을 미리 넣는 용도이고, 실제로 변하는
-영역 대부분은 :mod:`qatc.analyze.motion`이 자동으로 학습한다. 둘은 합쳐서 쓴다.
+창 탐색·캡처 ROI·무시 영역 등은 녹화 파이프라인 전용 필드였으나 파이프라인
+자체가 삭제되어 더 이상 코드에서 읽지 않는다. ``profiles/*.yaml`` 파일에는
+과거 값이 그대로 남아 있을 수 있지만(예: ``capture_roi``, ``static_ignore``),
+아래 로더는 그 키들을 무시한다.
 """
 
 from __future__ import annotations
@@ -21,21 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
-from .models import NormRect
-
-
-@dataclass
-class IgnoreRegion:
-    rect: NormRect
-    why: str = ""
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> IgnoreRegion:
-        return cls(
-            rect=NormRect(float(d["x"]), float(d["y"]), float(d["w"]), float(d["h"])),
-            why=d.get("why", ""),
-        )
 
 
 @dataclass
@@ -92,14 +73,12 @@ class GameProfile:
     name: str                             # 표시 이름 (예: "원신")
     title_regex: str = ""
     process_name: str = ""
-    capture_roi: NormRect | None = None   # None이면 클라이언트 영역 전체
     ui_language: str = "ko"
-    static_ignore: list[IgnoreRegion] = field(default_factory=list)
     #: LLM 프롬프트에 주입할 게임 배경 지식. 화면 명명 품질을 크게 좌우한다.
     llm_context: str = ""
     #: 이 게임에서 의미 있는 키 (TC 절차 문구에 그대로 쓰인다).
     key_hints: dict[str, str] = field(default_factory=dict)
-    #: 에뮬레이터 등 창 안에 다른 UI가 있는 경우 True — 캡처 ROI를 반드시 확인시킨다.
+    #: 에뮬레이터 등 창 안에 다른 UI가 있는 경우 True.
     is_emulator: bool = False
     #: 입력 해석 규칙.
     input_rules: InputRules = field(default_factory=InputRules)
@@ -125,33 +104,20 @@ class GameProfile:
         hint = self.key_hints.get(key.lower())
         return f"{key.upper()}({hint})" if hint else key.upper()
 
-    @property
-    def ignore_rects(self) -> list[NormRect]:
-        return [r.rect for r in self.static_ignore]
-
     # -- 로딩 --------------------------------------------------------
 
     @classmethod
     def from_dict(cls, key: str, d: dict[str, Any]) -> GameProfile:
         window = d.get("window") or {}
-        roi_raw = d.get("capture_roi")
-        roi: NormRect | None = None
-        if isinstance(roi_raw, (list, tuple)) and len(roi_raw) == 4:
-            roi = NormRect(*(float(v) for v in roi_raw))
-        elif isinstance(roi_raw, dict):
-            roi = NormRect(
-                float(roi_raw["x"]), float(roi_raw["y"]), float(roi_raw["w"]), float(roi_raw["h"])
-            )
-        # "full" 또는 누락이면 None (전체 영역)
+        # capture_roi / static_ignore 는 녹화 파이프라인 전용 키였다 — 남아 있는
+        # YAML 값은 무시한다 (읽지 않는다).
 
         return cls(
             key=key,
             name=d.get("name", key),
             title_regex=window.get("title_regex", ""),
             process_name=window.get("process", ""),
-            capture_roi=roi,
             ui_language=d.get("ui_language", "ko"),
-            static_ignore=[IgnoreRegion.from_dict(r) for r in (d.get("static_ignore") or [])],
             llm_context=(d.get("llm_context") or "").strip(),
             key_hints={str(k).lower(): str(v) for k, v in (d.get("key_hints") or {}).items()},
             is_emulator=bool(d.get("is_emulator", False)),

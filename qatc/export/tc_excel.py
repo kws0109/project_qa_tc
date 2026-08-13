@@ -1,6 +1,7 @@
 """컨텐츠 지식에서 만든 TC를 xlsx로 내보낸다.
 
-`export/excel.py` 와 달리 `FlowGraph` 나 `SessionStore` 를 요구하지 않는다.
+녹화 파이프라인의 출력기(그래프·세션 저장소가 필요했다)와 달리, 이 모듈은
+지식 저장소(:class:`~qatc.knowledge.store.KnowledgeStore`)만 있으면 된다.
 녹화 세션이 없는 인터뷰 기반 파이프라인의 출력 경로다.
 
 **모든 셀 값은 :func:`clean_cell` 을 통과시킨다.** openpyxl은 제어문자가 든

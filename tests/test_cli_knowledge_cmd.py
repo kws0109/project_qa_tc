@@ -40,32 +40,24 @@ def test_knowledge_on_missing_game_fails(cfg_env, capsys):
     assert "없는게임" in capsys.readouterr().out
 
 
-def test_legacy_commands_are_hidden_without_flag():
+def test_record_command_not_registered():
+    """녹화 파이프라인은 삭제됐다 — 'record'는 더 이상 어떤 형태로도 등록되지 않는다."""
     parser = build_parser()
-    # argparse 는 등록된 하위명령만 받는다
     with pytest.raises(SystemExit):
         parser.parse_args(["record", "--profile", "starrail"])
 
 
-def test_legacy_commands_available_with_flag():
-    parser = build_parser(legacy=True)
-    args = parser.parse_args(["analyze", "some-session"])
-    assert args.command == "analyze"
-
-
-def test_new_commands_available_without_flag():
+def test_new_commands_available():
     parser = build_parser()
     args = parser.parse_args(["tc", "plan", "파티편성"])
     assert args.tc_command == "plan"
 
 
-def test_legacy_config_dispatches_through_main(monkeypatch):
-    """main(["--legacy", "config"]) 가 성공하려면 두 가지가 다 맞아야 한다:
+def test_config_dispatches_through_main(monkeypatch):
+    """main(["config"]) 가 cmd_config 로 디스패치되는지 확인한다.
 
-    (1) main() 이 argv 에서 '--legacy' 를 argparse 에 넘기기 전에 떼어내고,
-    (2) 그 결과로 만든 legacy 파서에 'config' 가 등록돼 있어야 한다.
-    실제 설정 파일에 쓰거나 API 키를 묻지 않도록 cmd_config 자체는 스텁으로
-    교체해 디스패치 배선만 검증한다.
+    실제 설정 파일에 쓰지 않도록 cmd_config 자체는 스텁으로 교체해
+    디스패치 배선만 검증한다.
     """
     import qatc.cli as cli
 
@@ -77,5 +69,5 @@ def test_legacy_config_dispatches_through_main(monkeypatch):
 
     monkeypatch.setattr(cli, "cmd_config", fake_cmd_config)
 
-    assert cli.main(["--legacy", "config"]) == 0
+    assert cli.main(["config"]) == 0
     assert len(calls) == 1
