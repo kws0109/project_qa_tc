@@ -223,6 +223,88 @@ def test_add_rejects_non_string_list_element(ready, monkeypatch, capsys):
     assert _stored(ready) == []
 
 
+@pytest.mark.parametrize("raw, kind", [
+    ('[{"title":"t","steps":["s"],"expected":["e"]}]', "list"),
+    ('"testcases"', "str"),
+    ('42', "int"),
+    ('null', "NoneType"),
+], ids=["array", "string", "number", "null"])
+def test_add_rejects_non_object_top_level(ready, monkeypatch, capsys, raw, kind):
+    """최상위가 객체가 아니면 날 `AttributeError` 대신 기대 형태를 알려준다.
+
+    라운드 1a 는 항목 하나하나(`_validate_item`)만 검사하고 **페이로드 자체는
+    아무도 검사하지 않았다.** 실측:
+
+        $ echo '[{"title":"t"}]' > bad.json
+        $ qatc tc add ... --json bad.json
+
+        오류: AttributeError: 'list' object has no attribute 'get'
+
+    (`오류:` 앞의 빈 줄까지 포함해서, `cli.py` 의 범용 예외 핸들러가 낸
+    출력이다.) 이 명령의 호출자는 인터뷰를 진행하는 모델이라, 파이썬 타입명은
+    다음에 무엇을 할지 알려주지 않는다.
+    """
+    monkeypatch.setattr("sys.stdin", _StdIn(raw))
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "interview", "--json", "-"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "AttributeError" not in out
+    assert kind in out                        # 무엇이 왔는지 짚는다
+    assert "testcases" in out                 # 기대 형태를 알려준다
+    assert out.lstrip() == out                # 범용 핸들러가 내던 빈 줄이 없다
+    assert _stored(ready) == []
+
+
+def test_add_missing_testcases_key_names_next_action(ready, monkeypatch, capsys):
+    """객체이긴 한데 `testcases` 가 없는 경우도 다음 조치를 함께 알린다."""
+    monkeypatch.setattr("sys.stdin", _StdIn('{"cases": []}'))
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "interview", "--json", "-"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "testcases" in out
+    assert "title" in out                     # 기대 형태를 예시로 보여준다
+
+
+def test_add_rejects_unparseable_json_text(ready, monkeypatch, capsys):
+    """JSON 자체가 깨진 경우 — 이미 막혀 있던 경로를 고정한다."""
+    monkeypatch.setattr("sys.stdin", _StdIn("{not json"))
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "interview", "--json", "-"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "JSON을 읽을 수 없습니다" in out
+    assert "JSONDecodeError" not in out
+
+
+def test_add_rejects_non_string_title(ready, monkeypatch, capsys):
+    """`title` 이 문자열이 아니면 `str()` 로 뭉개지 않고 거부한다.
+
+    `{"title": {"a": 1}}` 은 truthy 라 필수 필드 검사를 통과하고,
+    `str(item["title"])` 이 `{'a': 1}` 을 그대로 xlsx 제목 칸에 넣었다.
+    steps/expected 와 같은 결함인데 라운드 1a 에서 `title` 만 빠졌다.
+    """
+    monkeypatch.setattr("sys.stdin", _StdIn(_one(title={"a": 1})))
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "interview", "--json", "-"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "testcases[0].title" in out
+    assert "dict" in out
+    assert _stored(ready) == []
+
+
+def test_add_rejects_non_string_precondition(ready, monkeypatch, capsys):
+    """선택 필드도 문자열이어야 한다 — 있으면 그대로 xlsx 칸에 들어간다."""
+    monkeypatch.setattr("sys.stdin", _StdIn(_one(precondition=["a", "b"])))
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "interview", "--json", "-"])
+    assert rc == 1
+    assert "testcases[0].precondition" in capsys.readouterr().out
+    assert _stored(ready) == []
+
+
 def test_add_rejects_unknown_priority(ready, monkeypatch, capsys):
     """잘못된 priority 는 날 `ValueError` 대신 유효값을 알려주며 거부한다."""
     monkeypatch.setattr("sys.stdin", _StdIn(_one(priority="긴급")))

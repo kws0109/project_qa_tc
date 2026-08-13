@@ -239,9 +239,34 @@ def _read_json_arg(source: str) -> dict:
 _REQUIRED_FIELDS = ("title", "steps", "expected")
 #: 문자열 배열이어야 하는 필드.
 _LIST_FIELDS = ("steps", "expected")
+#: 문자열이어야 하는 필드. 없으면 넘어간다 (필수 여부는 `_REQUIRED_FIELDS` 가 본다).
+_STR_FIELDS = ("title", "precondition", "rationale")
+#: 오류 메시지에서 기대 형태를 보여줄 때 쓰는 최소 예시.
+_SHAPE_EXAMPLE = ('{"testcases": [{"title": "...", "steps": ["..."], '
+                  '"expected": ["..."]}]}')
 #: `in` 검사에 집합 대신 튜플을 쓰는 이유: priority 자리에 배열·객체가 와도
 #: 해시 불가 예외 없이 그냥 "유효하지 않음"으로 떨어져야 한다.
 _PRIORITY_VALUES = tuple(p.value for p in Priority)
+
+
+def _validate_payload(payload: object) -> str | None:
+    """`tc add` 최상위 페이로드를 검사한다. 문제가 없으면 `None`.
+
+    라운드 1a 가 항목 하나하나(:func:`_validate_item`)는 검사하게 만들었지만
+    **페이로드 자체는 아무도 보지 않았다.** 최상위가 배열이면 `payload.get` 에서
+    `AttributeError: 'list' object has no attribute 'get'` 가 그대로 새어나왔다
+    (게다가 `cli.py` 범용 핸들러의 앞줄 공백까지 함께). 이 명령의 호출자는
+    인터뷰를 진행하는 모델이고, 파이썬 타입명은 다음에 무엇을 할지 알려주지 않는다.
+    """
+    if not isinstance(payload, dict):
+        return (f"최상위가 객체가 아닙니다 ({type(payload).__name__}). "
+                f"{_SHAPE_EXAMPLE} 형태로 감싸 주세요.")
+
+    items = payload.get("testcases")
+    if not isinstance(items, list) or not items:
+        return (f"최상위에 비어 있지 않은 'testcases' 배열이 필요합니다. "
+                f"{_SHAPE_EXAMPLE} 형태로 주세요.")
+    return None
 
 
 def _validate_item(item: object, i: int) -> str | None:
@@ -266,6 +291,15 @@ def _validate_item(item: object, i: int) -> str | None:
         # 더해야 하는지 다시 추론해야 한다.
         return (f"testcases[{i}] 에 필수 필드가 없습니다 — {', '.join(missing)}. "
                 f"빠진 필드를 채워 다시 주세요.")
+
+    for field in _STR_FIELDS:
+        value = item.get(field)
+        if value is not None and not isinstance(value, str):
+            # `{"title": {"a": 1}}` 은 truthy 라 위 필수 필드 검사를 통과한 뒤
+            # `str()` 로 뭉개져 `{'a': 1}` 이 xlsx 제목 칸에 그대로 들어갔다.
+            # steps/expected 와 같은 결함이다.
+            return (f"testcases[{i}].{field} 가 문자열이 아닙니다 "
+                    f"({type(value).__name__}). 이 필드는 한 개의 문자열이어야 합니다.")
 
     for field in _LIST_FIELDS:
         value = item[field]
@@ -294,10 +328,11 @@ def cmd_tc_add(args: argparse.Namespace, cfg: AppConfig) -> int:
         _p(f"오류: JSON을 읽을 수 없습니다 — {exc}")
         return 1
 
-    items = payload.get("testcases")
-    if not isinstance(items, list) or not items:
-        _p("오류: 최상위에 비어 있지 않은 'testcases' 배열이 필요합니다.")
+    error = _validate_payload(payload)
+    if error:
+        _p(f"오류: {error}")
         return 1
+    items = payload["testcases"]
 
     store = resolve_store(cfg, args.game, args.content)
     try:
