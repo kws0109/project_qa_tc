@@ -18,8 +18,13 @@ from pathlib import Path
 
 from .config import AppConfig
 from .console import _p
-from .knowledge.gate import FAMILY_META, plan_families, validate_family
-from .knowledge.models import SLOT_STATUS_LABEL, SlotStatus
+from .knowledge.gate import (
+    FAMILY_META,
+    plan_families,
+    unregistered_family_reason,
+    validate_family,
+)
+from .knowledge.models import SlotStatus
 from .knowledge.slots import KNOWN_TYPES
 from .knowledge.store import KnowledgeStore
 from .models import Priority, TCOrigin, TestCase
@@ -156,15 +161,14 @@ def cmd_slot_set(args: argparse.Namespace, cfg: AppConfig) -> int:
 
 
 def cmd_slot_add(args: argparse.Namespace, cfg: AppConfig) -> int:
-    # `--family` 를 여기서 검증하는 이유: 통과시키면 되돌릴 수 없이 조용히 틀린다.
-    # 오타(`중단됨`)는 `tc plan` 에서 `FAMILY_META` 폴백을 타 의도한 INTERRUPT 대신
-    # HAPPY_PATH / Medium 이 배정되고, 빈 문자열은 어떤 계열도 만들지 못하면서
-    # 커버리지 분모(`total`)만 늘리는 "죽은 슬롯"이 된다. 둘 다 rc=0 이라
-    # 아무도 눈치채지 못한다.
+    # `--family` 를 여기서도 검증하는 이유: 게이트가 미등록 계열을 거부하게 된
+    # 지금도, 통과시키면 **아무 TC도 만들지 못하는 죽은 슬롯**이 남는다.
+    # 오타(`중단됨`)든 빈 문자열이든 커버리지 분모(`total`)만 늘리고 rc=0 이라
+    # 아무도 눈치채지 못한다. 만드는 자리에서 막는 편이 훨씬 싸다.
     # argparse `choices` 를 쓰지 않는 이유는 `tc add` 와 같다 (register() 주석 참조).
     if args.family not in FAMILY_META:
-        _p(f"오류: 알 수 없는 계열 '{args.family}'. "
-           f"정의된 계열 중 하나를 쓰세요: {', '.join(sorted(FAMILY_META))}")
+        _p(f"오류: {unregistered_family_reason(args.family)}. "
+           f"이 중 하나를 --family 에 쓰세요.")
         return 1
 
     store = resolve_store(cfg, args.game, args.content)
@@ -206,7 +210,11 @@ def cmd_tc_plan(args: argparse.Namespace, cfg: AppConfig) -> int:
             ],
             "skipped": [
                 {"family": s.family, "slot": s.slot_key,
-                 "hint": s.prompt_hint, "status": s.status.value}
+                 "hint": s.prompt_hint, "status": s.status.value,
+                 # `status` 만으로는 미등록 계열을 설명할 수 없다 — 그 슬롯은
+                 # FILLED 이고 문제는 계열 이름이다. 이 출력을 읽는 모델이
+                 # 무엇을 고쳐야 하는지 알려면 사유가 따로 있어야 한다.
+                 "reason": s.reason}
                 for s in skipped
             ],
         }, ensure_ascii=False, indent=2))
@@ -218,7 +226,7 @@ def cmd_tc_plan(args: argparse.Namespace, cfg: AppConfig) -> int:
     if skipped:
         _p("\n제외됨:")
         for s in skipped:
-            _p(f"  {s.family:<16} {s.slot_key:<16} {SLOT_STATUS_LABEL[s.status]}")
+            _p(f"  {s.family:<16} {s.slot_key:<16} {s.reason}")
     return 0
 
 
@@ -357,7 +365,7 @@ def cmd_tc_list(args: argparse.Namespace, cfg: AppConfig) -> int:
         _p("\n⚠ 다음 항목이 미확인이라 해당 TC가 없습니다")
         for s in skipped:
             _p(f"   {s.slot_key:<16} ({s.prompt_hint}) → {s.family} TC 없음  "
-               f"[{SLOT_STATUS_LABEL[s.status]}]")
+               f"[{s.reason}]")
         _p("\n   이어서 채우려면 Claude Code에서 인터뷰를 재개하세요.")
     return 0
 

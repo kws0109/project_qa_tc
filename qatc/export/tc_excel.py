@@ -21,7 +21,6 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from ..knowledge.gate import FamilySkip
-from ..knowledge.models import SLOT_STATUS_LABEL
 from ..models import TCOrigin, TestCase
 
 #: openpyxl이 거부하는 제어문자. 탭·개행·복귀는 남긴다 (셀 안에서 유효하다).
@@ -81,7 +80,7 @@ def _sheet_skipped(wb: Workbook, skipped: Sequence[FamilySkip]) -> None:
     _header(ws, ["슬롯", "묻는 것", "만들지 못한 계열", "상태"], [18, 40, 18, 14])
     for r, s in enumerate(skipped, start=2):
         for col, v in enumerate(
-            [s.slot_key, s.prompt_hint, s.family, SLOT_STATUS_LABEL[s.status]], start=1
+            [s.slot_key, s.prompt_hint, s.family, s.reason], start=1
         ):
             ws.cell(row=r, column=col, value=clean_cell(str(v))).alignment = _WRAP
 

@@ -22,9 +22,9 @@ def test_every_base_family_has_meta():
 
 
 def test_every_type_family_has_meta():
-    # plan_families 는 FAMILY_META.get(family, 기본값)으로 조용히 폴백한다.
-    # TYPE_SLOTS 가 FAMILY_META 에 없는 계열을 쓰면 에러 없이 잘못된
-    # kind/priority 가 배정되므로, BASE_SLOTS 뿐 아니라 여기도 검사해야 한다.
+    # 미등록 계열은 plan_families 가 계획하지 않고 skipped 로 보낸다.
+    # TYPE_SLOTS 가 FAMILY_META 에 없는 계열을 쓰면 그 유형의 슬롯을 아무리
+    # 채워도 TC가 나오지 않으므로, BASE_SLOTS 뿐 아니라 여기도 검사해야 한다.
     for specs in TYPE_SLOTS.values():
         for spec in specs:
             if spec.tc_family:
@@ -108,9 +108,14 @@ def test_validate_family_rejects_na_status_slot_with_distinct_reason():
     assert "모른다고 답함" not in msg
 
 
-def test_validate_family_rejects_unknown_family_name():
+def test_validate_family_rejects_registered_family_with_no_slot():
+    """등록은 됐지만 이 컨텐츠에 근거 슬롯이 아예 없는 계열.
+
+    `중단` 은 `FAMILY_META` 에 있으나 어떤 기본·유형 슬롯도 쓰지 않는다
+    (`slot add` 로만 생긴다). 미등록 계열과는 다른 상황이라 문구도 다르다.
+    """
     with pytest.raises(ValueError, match="알 수 없는 계열"):
-        validate_family("없는계열", _slots(core_action=SlotStatus.FILLED))
+        validate_family("중단", _slots(core_action=SlotStatus.FILLED))
 
 
 def test_two_slots_sharing_a_family_plan_once():
@@ -153,20 +158,56 @@ def test_first_filled_slot_wins_as_family_representative():
     assert rep.slot_key == "constraints"
 
 
-def test_unregistered_family_falls_back_to_happy_path_medium():
-    """`FAMILY_META` 에 없는 계열의 폴백 튜플을 고정한다 (뮤테이션 M09).
+def _unregistered() -> list[Slot]:
+    """등록되지 않은 계열(`중단` 의 오타)을 근거로 가진 슬롯 하나."""
+    return [Slot("네트워크", "통신이 끊기면", "중단됨", status=SlotStatus.FILLED, ord=0)]
 
-    `slot add --family` 검증이 생겨 CLI 로 새로 만들기는 어려워졌지만, 이 폴백은
-    여전히 도달 가능하다 — `plan_families` 는 순수 함수이고, 검증 이전에 만들어져
-    **이미 DB에 들어간** 미등록 계열 슬롯은 그대로 남는다. 폴백이 바뀌면 그런
-    슬롯에서 나오는 TC의 종류와 우선순위가 조용히 달라진다.
+
+def test_unregistered_family_is_never_planned():
+    """`FAMILY_META` 에 없는 계열은 근거가 있어도 계획하지 않는다.
+
+    예전에는 `FAMILY_META.get(family, (HAPPY_PATH, MEDIUM))` 폴백을 타
+    **미등록 계열이 조용히 `정상 경로` TC로 둔갑**했다 — 최종 xlsx 에서 가장
+    신뢰도 높은 칸이고, 오타(`중단됨`)는 거기서 보이지 않는다. `slot add` 의
+    CLI 검증은 우회 가능하므로(저장소 API 직접 호출, 검증 이전에 들어간 DB)
+    정책이 있는 게이트에서 막는다.
     """
-    slots = [Slot("네트워크", "통신이 끊기면", "미등록계열",
-                  status=SlotStatus.FILLED, ord=0)]
-    planned, _ = plan_families(slots)
-    assert [p.family for p in planned] == ["미등록계열"]
-    assert planned[0].kind is TCKind.HAPPY_PATH
+    planned, skipped = plan_families(_unregistered())
+    assert planned == []
+    reasons = {s.family: s.reason for s in skipped}
+    assert "중단됨" in reasons
+    assert "등록되지 않은 계열" in reasons["중단됨"]
+    assert "정상 경로" in reasons["중단됨"]      # 유효한 계열 목록을 알려준다
+
+
+def test_validate_family_refuses_unregistered_family():
+    """`tc add` 도 같은 이유로 거부한다 — `tc plan` 과 어긋나면 안 된다.
+
+    거부 사유가 "근거가 없다"가 아니라 **"계열 이름이 등록돼 있지 않다"** 여야
+    한다. 슬롯은 실제로 채워져 있으므로, 막힌 슬롯을 가리키는 문구
+    (`생성 대상이 아닙니다 (네트워크 슬롯: ...)`)는 고쳐야 할 곳을 잘못 짚는다.
+    """
+    with pytest.raises(ValueError) as exc:
+        validate_family("중단됨", _unregistered())
+    msg = str(exc.value)
+    assert "등록되지 않은 계열" in msg
+    assert "중단됨" in msg
+    assert "정상 경로" in msg                     # 유효한 계열 목록
+    assert "생성 대상이 아닙니다" not in msg      # 근거 부족이 아니라 이름 문제다
+    assert "tc plan" in msg                       # 다음 조치
+
+
+def test_registered_interrupt_family_still_reaches_its_meta():
+    """`중단` 은 `slot add` 로 도달하라고 FAMILY_META 에 남겨둔 계열이다.
+
+    미등록 계열을 막으면서 이 경로까지 막으면 `slot add` 의 존재 이유가 사라진다.
+    """
+    slots = [Slot("네트워크", "통신이 끊기면", "중단", status=SlotStatus.FILLED, ord=0)]
+    planned, skipped = plan_families(slots)
+    assert [p.family for p in planned] == ["중단"]
+    assert planned[0].kind is TCKind.INTERRUPT
     assert planned[0].priority is Priority.MEDIUM
+    assert skipped == []
 
 
 def test_first_blocked_slot_wins_as_family_representative():

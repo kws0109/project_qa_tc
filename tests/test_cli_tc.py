@@ -4,6 +4,7 @@ import pytest
 
 from qatc.cli import main
 from qatc.config import AppConfig
+from qatc.knowledge.models import SlotStatus
 from qatc.knowledge.store import KnowledgeStore
 
 
@@ -76,11 +77,48 @@ def test_add_rejects_unplanned_family(ready, capsys, monkeypatch):
 
 
 def test_add_rejects_unknown_family(ready, monkeypatch, capsys):
+    """등록되지 않은 계열 이름은 `tc add` 에서 거부된다."""
     monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
     rc = main(["tc", "add", "파티편성", "--family", "없는계열",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
-    assert "알 수 없는 계열" in capsys.readouterr().out
+    assert "등록되지 않은 계열" in capsys.readouterr().out
+
+
+def _inject_unregistered_family_slot(root):
+    """CLI 검증을 우회해 미등록 계열 슬롯을 DB에 직접 넣는다.
+
+    `slot add --family` 의 검증은 CLI 경계에만 있으므로, 저장소 API 를 직접
+    부르거나 그 검증이 생기기 전에 만들어진 DB 를 열면 이 상태가 실제로 존재한다.
+    """
+    with KnowledgeStore(root / "starrail.db") as s:
+        s.add_slot("파티편성", "네트워크", "통신이 끊기면", "중단됨")
+        s.set_slot("파티편성", "네트워크", SlotStatus.FILLED, "전투 중 통신이 끊긴다")
+
+
+def test_plan_and_add_agree_on_unregistered_family(ready, monkeypatch, capsys):
+    """`tc plan` 과 `tc add` 가 미등록 계열에 대해 같은 답을 해야 한다.
+
+    예전에는 `tc plan` 이 `중단됨`(오타)을 **`정상` / Medium 으로 계획**하고
+    `tc add` 가 그대로 받아, 최종 xlsx 의 `정상 경로` 칸에 근거 없는 TC가
+    들어갔다. 오타는 그 칸에서 보이지 않는다.
+    """
+    _inject_unregistered_family_slot(ready)
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    assert main(["tc", "plan", "파티편성", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert "중단됨" not in [p["family"] for p in data["planned"]]
+    skipped = {s["family"]: s for s in data["skipped"]}
+    assert "등록되지 않은 계열" in skipped["중단됨"]["reason"]
+
+    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    rc = main(["tc", "add", "파티편성", "--family", "중단됨",
+               "--origin", "interview", "--json", "-"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "등록되지 않은 계열" in out
+    assert _stored(ready) == []
 
 
 def test_add_rejects_missing_required_field(ready, monkeypatch, capsys):
