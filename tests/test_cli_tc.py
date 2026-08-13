@@ -115,6 +115,86 @@ def test_list_shows_unmet_slots(ready, monkeypatch, capsys):
     assert "재화 부족" in out  # 미충족 리포트
 
 
+def test_add_rejects_unknown_status_slot_family(ready, monkeypatch, capsys):
+    # cost 슬롯을 "모른다"로 답한 상태 — empty 와 다른 사유여야 한다.
+    main(["slot", "set", "파티편성", "cost", "--status", "unknown"])
+    capsys.readouterr()
+    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    rc = main(["tc", "add", "파티편성", "--family", "재화 부족",
+               "--origin", "inferred", "--json", "-"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "cost" in out
+    assert "사용자가 모른다고 답함" in out
+    assert "슬롯이 비어 있음" not in out
+    assert "해당 없음으로 표시됨" not in out
+
+
+def test_add_rejects_na_status_slot_family(ready, monkeypatch, capsys):
+    # cost 슬롯이 "해당 없음"으로 표시된 상태 — empty/unknown 과 다른 사유여야 한다.
+    main(["slot", "set", "파티편성", "cost", "--status", "na"])
+    capsys.readouterr()
+    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    rc = main(["tc", "add", "파티편성", "--family", "재화 부족",
+               "--origin", "inferred", "--json", "-"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "cost" in out
+    assert "해당 없음으로 표시됨" in out
+    assert "슬롯이 비어 있음" not in out
+    assert "사용자가 모른다고 답함" not in out
+
+
+def test_add_reports_correct_added_and_kept_counts(ready, monkeypatch, capsys):
+    payload = json.dumps({
+        "testcases": [
+            {
+                "title": "정상 동작 1",
+                "precondition": "파티 편성 화면",
+                "steps": ["파티 적용을 누른다"],
+                "expected": ["파티가 적용된다"],
+                "rationale": "core_action 슬롯에서 도출",
+            },
+            {
+                "title": "정상 동작 2",
+                "precondition": "파티 편성 화면",
+                "steps": ["다른 파티를 적용한다"],
+                "expected": ["다른 파티가 적용된다"],
+                "rationale": "core_action 슬롯에서 도출",
+            },
+        ]
+    }, ensure_ascii=False)
+    monkeypatch.setattr("sys.stdin", _StdIn(payload))
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "interview", "--json", "-"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # 페이로드의 testcases 수(2)와 정확히 일치해야 한다 — (added, kept) 언패킹
+    # 순서가 뒤바뀌면 "TC 0건 저장 · 사람 손댄 2건 보존"처럼 거짓 실패로 보인다.
+    assert "TC 2건 저장" in out
+    assert "보존" not in out
+    with KnowledgeStore(ready / "starrail.db") as s:
+        assert len(s.testcases("파티편성")) == 2
+
+
+def test_add_stores_inferred_origin(ready, monkeypatch):
+    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    main(["tc", "add", "파티편성", "--family", "정상 경로",
+          "--origin", "inferred", "--json", "-"])
+    with KnowledgeStore(ready / "starrail.db") as s:
+        tc = s.testcases("파티편성")[0]
+    assert tc.origin.value == "추론됨"
+
+
+def test_add_stores_user_origin(ready, monkeypatch):
+    monkeypatch.setattr("sys.stdin", _StdIn(_payload()))
+    main(["tc", "add", "파티편성", "--family", "정상 경로",
+          "--origin", "user", "--json", "-"])
+    with KnowledgeStore(ready / "starrail.db") as s:
+        tc = s.testcases("파티편성")[0]
+    assert tc.origin.value == "사용자추가"
+
+
 class _StdIn:
     def __init__(self, text: str):
         self._text = text
