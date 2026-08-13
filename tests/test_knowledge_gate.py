@@ -167,3 +167,37 @@ def test_unregistered_family_falls_back_to_happy_path_medium():
     assert [p.family for p in planned] == ["미등록계열"]
     assert planned[0].kind is TCKind.HAPPY_PATH
     assert planned[0].priority is Priority.MEDIUM
+
+
+def test_first_blocked_slot_wins_as_family_representative():
+    """막힌 쪽 대표 슬롯도 "먼저 나온 것이 이긴다" 여야 한다 (뮤테이션 M02).
+
+    위 test_first_filled_slot_wins_as_family_representative 의 거울상이다.
+    FILLED 쪽은 봉인돼 있었지만 blocked 쪽은 `first_blocked.setdefault` 를
+    평범한 대입으로 바꿔도 109개가 전부 통과했다.
+
+    한 계열에 막힌 슬롯이 둘 이상일 때 이 규칙이 뒤집히면, 사용자에게 보이는
+    **슬롯 이름과 사유가 함께** 바뀐다 — `tc plan` 의 제외 목록, `tc list` 의
+    미확인 리포트, xlsx 의 `미확인 항목` 시트, 그리고 게이트 거부 메시지가
+    "constraints 가 비어 있음" 대신 "편성.정원 이 해당 없음" 이라고 말하게 된다.
+    사유가 바뀌면 사용자가 해야 할 다음 행동도 달라진다.
+    """
+    slots = _slots()  # constraints 는 EMPTY 이고 편성.정원 보다 먼저 나온다
+    slots.append(Slot("편성.정원", "몇 명까지", "경계값", status=SlotStatus.NA, ord=99))
+    _, skipped = plan_families(slots)
+
+    rep = next(s for s in skipped if s.family == "경계값")
+    assert rep.slot_key == "constraints"
+    assert rep.status is SlotStatus.EMPTY      # 사유도 첫 슬롯의 것이어야 한다
+
+
+def test_blocked_representative_reason_reaches_the_refusal_message():
+    """대표 슬롯이 바뀌면 거부 메시지의 사유 문구까지 바뀐다는 것을 고정한다."""
+    slots = _slots()
+    slots.append(Slot("편성.정원", "몇 명까지", "경계값", status=SlotStatus.NA, ord=99))
+    with pytest.raises(ValueError) as exc:
+        validate_family("경계값", slots)
+    msg = str(exc.value)
+    assert "constraints" in msg
+    assert "슬롯이 비어 있음" in msg
+    assert "해당 없음으로 표시됨" not in msg
