@@ -274,6 +274,46 @@ def cmd_tc_list(args: argparse.Namespace, cfg: AppConfig) -> int:
     return 0
 
 
+def cmd_knowledge(args: argparse.Namespace, cfg: AppConfig) -> int:
+    path = cfg.knowledge_path / f"{args.game}.db"
+    if not path.exists():
+        _p(f"'{args.game}' 지식 DB가 없습니다 ({path}).")
+        return 1
+
+    rows = []
+    with KnowledgeStore(path) as store:
+        for c in store.list_contents():
+            slots = store.slots(c.name)
+            planned, skipped = plan_families(slots)
+            rows.append({
+                "content": c.name,
+                "types": c.types,
+                "total": len(slots),
+                "filled": sum(1 for s in slots if s.status is SlotStatus.FILLED),
+                "planned_families": len(planned),
+                "skipped_families": len(skipped),
+                "testcases": len(store.testcases(c.name)),
+            })
+
+    if args.json:
+        _p(json.dumps({"game": args.game, "contents": rows}, ensure_ascii=False, indent=2))
+        return 0
+
+    _p(f"[{args.game}] 컨텐츠 {len(rows)}개\n")
+    _p(f"  {'컨텐츠':<14} {'채움':>7}  {'계열':>7}  {'TC':>4}")
+    _p(f"  {'-' * 40}")
+    for r in rows:
+        _p(f"  {r['content']:<14} {r['filled']:>3}/{r['total']:<3}  "
+           f"{r['planned_families']:>3}/{r['planned_families'] + r['skipped_families']:<3}  "
+           f"{r['testcases']:>4}")
+    return 0
+
+
+def cmd_export(args: argparse.Namespace, cfg: AppConfig) -> int:
+    _p("xlsx 출력은 아직 연결되지 않았습니다 (구현 계획 Task 9).")
+    return 1
+
+
 def register(sub) -> None:
     """`qatc` 하위파서에 지식 명령을 등록한다."""
     slot = sub.add_parser("slot", help="컨텐츠 지식 슬롯 조회·기록")
@@ -334,3 +374,14 @@ def register(sub) -> None:
     ls.add_argument("content")
     ls.add_argument("--game", "-g")
     ls.set_defaults(func=cmd_tc_list)
+
+    kn = sub.add_parser("knowledge", help="게임별 지식 커버리지")
+    kn.add_argument("--game", "-g", required=True)
+    kn.add_argument("--json", action="store_true")
+    kn.set_defaults(func=cmd_knowledge)
+
+    ex = sub.add_parser("export", help="xlsx 출력")
+    ex.add_argument("content")
+    ex.add_argument("--game", "-g")
+    ex.add_argument("--out", "-o")
+    ex.set_defaults(func=cmd_export)

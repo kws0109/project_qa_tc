@@ -1,16 +1,19 @@
 """QATC 명령줄 진입점.
 
+새 인터뷰 기반 흐름(slot / tc / knowledge / export)은 `cli_knowledge.py`를
+보라. 아래는 레거시 녹화 파이프라인으로, `--legacy` 뒤에서만 노출된다.
+
 ::
 
-    qatc record  --profile genshin      게임 플레이 녹화
-    qatc analyze <session>              화면 상태·전이 그래프 추출
-    qatc name    <session>              LLM으로 화면 명명
-    qatc review  <session>              리뷰 GUI 실행
-    qatc tc      <session>              테스트케이스 생성
-    qatc export  <session>              xlsx + 다이어그램 출력
-    qatc run     --profile genshin      녹화→분석→명명→TC→출력 한 번에
-    qatc list                           세션 목록
-    qatc config                         설정 / API 키
+    qatc --legacy record  --profile genshin      게임 플레이 녹화
+    qatc --legacy analyze <session>              화면 상태·전이 그래프 추출
+    qatc --legacy name    <session>              LLM으로 화면 명명
+    qatc --legacy review  <session>              리뷰 GUI 실행
+    qatc --legacy tc      <session>              테스트케이스 생성
+    qatc --legacy export  <session>              xlsx + 다이어그램 출력
+    qatc --legacy run     --profile genshin      녹화→분석→명명→TC→출력 한 번에
+    qatc --legacy list                           세션 목록
+    qatc config                                  설정 / API 키
 
 **LLM이 필요한 명령(name, tc)과 아닌 명령을 분리**했다. API 키 없이도
 record → analyze → export까지 돌아가고, 화면 이름만 자동 이름으로 남는다.
@@ -368,7 +371,7 @@ def cmd_export(args: argparse.Namespace, cfg: AppConfig) -> int:
     _p(f"Excel      : {xlsx}")
     _p(f"다이어그램 : {diagram}")
     if not testcases:
-        _p("\n※ 테스트케이스가 없습니다 — 'qatc tc'로 생성하면 시트가 채워집니다.")
+        _p("\n※ 테스트케이스가 없습니다 — 'qatc --legacy tc'로 생성하면 시트가 채워집니다.")
         _p("  지금은 화면 전이 다이어그램과 커버리지 시트만 들어 있습니다.")
     return 0
 
@@ -525,100 +528,101 @@ def cmd_config(args: argparse.Namespace, cfg: AppConfig) -> int:
 # ---------------------------------------------------------------- 파서
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(legacy: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="qatc",
         description="게임 QA 테스트케이스 자동 생성 도구",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
-일반적인 흐름:
-  qatc record --profile starrail     게임 플레이 녹화 (Ctrl+C로 종료)
-  qatc analyze latest                화면 상태와 전이 추출
-  qatc name latest                   LLM으로 화면 이름 붙이기
-  qatc review latest                 GUI에서 검토·수정
-  qatc tc latest                     테스트케이스 생성
-  qatc export latest                 xlsx + 다이어그램 출력
+일반적인 흐름 (Claude Code 세션에서 인터뷰 진행):
+  qatc slot init 파티편성 --game starrail --types 편성
+  qatc slot status 파티편성 --json     남은 항목 확인
+  qatc slot set 파티편성 <키> --status filled --value "..."
+  qatc tc plan 파티편성                 만들 수 있는 계열
+  qatc tc list 파티편성                 TC + 미충족 항목
+  qatc export 파티편성                  xlsx 출력
 
-세션 인자는 생략하거나 'latest'로 두면 가장 최근 세션을 씁니다.
+녹화 기반 명령은 'qatc --legacy <명령>' 으로만 노출됩니다.
 """,
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    from .cli_knowledge import register as _register_knowledge
-    _register_knowledge(sub)
+    if legacy:
+        def session_arg(sp: argparse.ArgumentParser) -> None:
+            sp.add_argument("session", nargs="?", default="latest",
+                            help="세션 ID 또는 경로 (기본: 가장 최근 세션)")
 
-    def session_arg(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument("session", nargs="?", default="latest",
-                        help="세션 ID 또는 경로 (기본: 가장 최근 세션)")
+        rec = sub.add_parser("record", help="게임 플레이 녹화")
+        rec.add_argument("--profile", "-p", help="게임 프로파일 (genshin, starrail, wuwa, bluearchive)")
+        rec.add_argument("--hwnd", help="대상 창 핸들을 직접 지정")
+        rec.add_argument("--backend", choices=["wgc", "dxgi", "gdi"], help="캡처 백엔드 강제")
+        rec.add_argument("--note", help="세션 메모")
+        rec.add_argument(
+            "--stop-file", metavar="경로",
+            help="이 경로에 파일이 생기면 정상 종료합니다 (백그라운드 실행용)",
+        )
+        rec.add_argument(
+            "--max-minutes", type=float, default=60.0,
+            help="최대 녹화 시간(분). 0이면 무제한. 기본 60분",
+        )
+        rec.add_argument(
+            "--force", action="store_true",
+            help="권한 경고를 무시하고 진행 (입력 없이 화면만 기록됩니다)",
+        )
+        rec.set_defaults(func=cmd_record)
 
-    rec = sub.add_parser("record", help="게임 플레이 녹화")
-    rec.add_argument("--profile", "-p", help="게임 프로파일 (genshin, starrail, wuwa, bluearchive)")
-    rec.add_argument("--hwnd", help="대상 창 핸들을 직접 지정")
-    rec.add_argument("--backend", choices=["wgc", "dxgi", "gdi"], help="캡처 백엔드 강제")
-    rec.add_argument("--note", help="세션 메모")
-    rec.add_argument(
-        "--stop-file", metavar="경로",
-        help="이 경로에 파일이 생기면 정상 종료합니다 (백그라운드 실행용)",
-    )
-    rec.add_argument(
-        "--max-minutes", type=float, default=60.0,
-        help="최대 녹화 시간(분). 0이면 무제한. 기본 60분",
-    )
-    rec.add_argument(
-        "--force", action="store_true",
-        help="권한 경고를 무시하고 진행 (입력 없이 화면만 기록됩니다)",
-    )
-    rec.set_defaults(func=cmd_record)
+        ana = sub.add_parser("analyze", help="화면 상태·전이 그래프 추출")
+        session_arg(ana)
+        ana.add_argument("--no-llm", action="store_true", help="애매한 화면 판별에 LLM을 쓰지 않음")
+        ana.add_argument("--fresh-volatility", action="store_true",
+                         help="이전 세션의 변동성 학습 결과를 재사용하지 않음")
+        ana.set_defaults(func=cmd_analyze)
 
-    ana = sub.add_parser("analyze", help="화면 상태·전이 그래프 추출")
-    session_arg(ana)
-    ana.add_argument("--no-llm", action="store_true", help="애매한 화면 판별에 LLM을 쓰지 않음")
-    ana.add_argument("--fresh-volatility", action="store_true",
-                     help="이전 세션의 변동성 학습 결과를 재사용하지 않음")
-    ana.set_defaults(func=cmd_analyze)
+        nm = sub.add_parser("name", help="LLM으로 화면 이름 붙이기")
+        session_arg(nm)
+        nm.set_defaults(func=cmd_name)
 
-    nm = sub.add_parser("name", help="LLM으로 화면 이름 붙이기")
-    session_arg(nm)
-    nm.set_defaults(func=cmd_name)
+        tc = sub.add_parser("tc", help="테스트케이스 생성")
+        session_arg(tc)
+        tc.add_argument("--happy-only", action="store_true",
+                        help="정상 경로만 생성 (추론 TC 제외 — 비용 절감)")
+        tc.add_argument("--yes", "-y", action="store_true", help="비용 확인을 묻지 않음")
+        tc.set_defaults(func=cmd_tc)
 
-    tc = sub.add_parser("legacy-tc", help="테스트케이스 생성")
-    session_arg(tc)
-    tc.add_argument("--happy-only", action="store_true",
-                    help="정상 경로만 생성 (추론 TC 제외 — 비용 절감)")
-    tc.add_argument("--yes", "-y", action="store_true", help="비용 확인을 묻지 않음")
-    tc.set_defaults(func=cmd_tc)
+        rv = sub.add_parser("review", help="리뷰 GUI 실행")
+        session_arg(rv)
+        rv.set_defaults(func=cmd_review)
 
-    rv = sub.add_parser("review", help="리뷰 GUI 실행")
-    session_arg(rv)
-    rv.set_defaults(func=cmd_review)
+        ex = sub.add_parser("export", help="xlsx + 다이어그램 출력")
+        session_arg(ex)
+        ex.add_argument("--output", "-o", help="xlsx 저장 경로")
+        ex.add_argument("--no-thumbnails", action="store_true", help="썸네일 삽입 생략 (빠름)")
+        ex.set_defaults(func=cmd_export)
 
-    ex = sub.add_parser("export", help="xlsx + 다이어그램 출력")
-    session_arg(ex)
-    ex.add_argument("--output", "-o", help="xlsx 저장 경로")
-    ex.add_argument("--no-thumbnails", action="store_true", help="썸네일 삽입 생략 (빠름)")
-    ex.set_defaults(func=cmd_export)
+        run = sub.add_parser("run", help="녹화→분석→명명→TC→출력 한 번에")
+        run.add_argument("--profile", "-p", help="게임 프로파일")
+        run.add_argument("--hwnd")
+        run.add_argument("--backend", choices=["wgc", "dxgi", "gdi"])
+        run.add_argument("--note")
+        run.add_argument("--stop-file", metavar="경로")
+        run.add_argument("--max-minutes", type=float, default=60.0)
+        run.add_argument("--force", action="store_true")
+        run.add_argument("--happy-only", action="store_true")
+        run.add_argument("--yes", "-y", action="store_true")
+        run.add_argument("--output", "-o")
+        run.add_argument("--no-thumbnails", action="store_true")
+        run.set_defaults(func=cmd_run)
 
-    run = sub.add_parser("run", help="녹화→분석→명명→TC→출력 한 번에")
-    run.add_argument("--profile", "-p", help="게임 프로파일")
-    run.add_argument("--hwnd")
-    run.add_argument("--backend", choices=["wgc", "dxgi", "gdi"])
-    run.add_argument("--note")
-    run.add_argument("--stop-file", metavar="경로")
-    run.add_argument("--max-minutes", type=float, default=60.0)
-    run.add_argument("--force", action="store_true")
-    run.add_argument("--happy-only", action="store_true")
-    run.add_argument("--yes", "-y", action="store_true")
-    run.add_argument("--output", "-o")
-    run.add_argument("--no-thumbnails", action="store_true")
-    run.set_defaults(func=cmd_run)
+        ls = sub.add_parser("list", help="세션 목록")
+        ls.set_defaults(func=cmd_list)
 
-    ls = sub.add_parser("list", help="세션 목록")
-    ls.set_defaults(func=cmd_list)
-
-    ic = sub.add_parser("icons", help="아이콘 사전 조회 (등록은 qatc review에서)")
-    ic.add_argument("game", nargs="?", help="게임 프로파일 키. 생략하면 사전 목록")
-    ic.add_argument("--export", metavar="경로", help="사전을 폴더로 내보내기 (백업·공유용)")
-    ic.set_defaults(func=cmd_icons)
+        ic = sub.add_parser("icons", help="아이콘 사전 조회 (등록은 qatc review에서)")
+        ic.add_argument("game", nargs="?", help="게임 프로파일 키. 생략하면 사전 목록")
+        ic.add_argument("--export", metavar="경로", help="사전을 폴더로 내보내기 (백업·공유용)")
+        ic.set_defaults(func=cmd_icons)
+    else:
+        from .cli_knowledge import register as _register_knowledge
+        _register_knowledge(sub)
 
     cf = sub.add_parser("config", help="설정 확인 / API 키 등록")
     cf.add_argument("--set-api-key", action="store_true", help="Anthropic API 키 등록")
@@ -629,7 +633,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    legacy = "--legacy" in raw
+    if legacy:
+        raw.remove("--legacy")
+    args = build_parser(legacy=legacy).parse_args(raw)
     cfg = AppConfig.load()
     try:
         return args.func(args, cfg)
