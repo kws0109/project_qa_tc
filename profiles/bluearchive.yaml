@@ -1,0 +1,31 @@
+name: 블루 아카이브 (에뮬레이터)
+window:
+  # BlueStacks / LDPlayer / MuMu 등. 실행기에 따라 제목이 달라 넓게 잡는다.
+  title_regex: "(BlueStacks|LDPlayer|MuMu|Nox|블루 ?아카이브|Blue Archive)"
+  process: ""
+# 에뮬레이터 상단 타이틀바와 우측 사이드바를 잘라낸다.
+# 실제 값은 사용자의 에뮬레이터 설정에 따라 다르므로 첫 실행 시 반드시 확인할 것.
+capture_roi: [0.0, 0.045, 0.955, 0.955]
+ui_language: ko
+is_emulator: true
+
+static_ignore:
+  - {x: 0.80, y: 0.00, w: 0.20, h: 0.07, why: "우측 상단 재화(AP/크레딧) 표시"}
+  - {x: 0.00, y: 0.00, w: 0.15, h: 0.07, why: "좌측 상단 프로필/레벨"}
+
+key_hints:
+  esc: 뒤로가기
+input:
+  # 에뮬레이터는 항상 마우스 포인터가 활성화되어 있다 — 수식키가 필요 없다.
+  pointer_modifier: ""
+  ignore_keys: []
+  drop_unmodified_clicks: false
+
+llm_context: |
+  넥슨게임즈의 모바일 서브컬쳐 RPG. PC에서는 안드로이드 에뮬레이터로 구동하므로
+  캡처 화면에 에뮬레이터 UI(타이틀바, 사이드바)가 섞여 들어올 수 있다 —
+  게임 화면 영역만 판단하고 에뮬레이터 UI는 무시할 것.
+  세로가 아닌 가로(landscape) 레이아웃이다.
+  주요 화면: 로비(홈) → 카페 / 학생 / 편성 / 임무 / 상점 / 모집(가챠) / 제작.
+  하단에 탭 바가 고정되어 있고 우측 상단에 재화가 표시된다.
+  로비의 학생 캐릭터는 항상 애니메이션 중이며 터치에 반응한다 — 상태 식별 시 무시해야 한다.

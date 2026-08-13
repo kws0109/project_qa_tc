@@ -1,0 +1,31 @@
+name: 명조 (Wuthering Waves)
+window:
+  title_regex: "^(鸣潮|Wuthering Waves|명조)"
+  process: Client-Win64-Shipping.exe
+capture_roi: full
+ui_language: ko
+is_emulator: false
+
+static_ignore:
+  - {x: 0.85, y: 0.00, w: 0.15, h: 0.06, why: "우측 상단 시간/재화"}
+  - {x: 0.00, y: 0.00, w: 0.18, h: 0.10, why: "좌측 상단 파티 HP/공명"}
+  - {x: 0.00, y: 0.90, w: 0.24, h: 0.10, why: "좌측 하단 알림"}
+
+key_hints:
+  esc: 메뉴/뒤로가기
+  c: 공명자(캐릭터)
+  b: 가방
+  m: 지도
+  f: 상호작용
+input:
+  # 명조도 필드에서 Alt 홀드로 포인터를 활성화한다.
+  pointer_modifier: alt
+  ignore_keys: [w, a, s, d, space, ctrl, shift, q, e, r, t, f]
+  drop_unmodified_clicks: false
+
+llm_context: |
+  쿠로게임즈의 오픈월드 액션 RPG. 원신과 UI 구조가 유사하나 용어가 다르다.
+  캐릭터는 "공명자", 성유물에 해당하는 것은 "음骸(에코)", 가챠는 "환상 소환"이다.
+  주요 화면: 필드 → 터미널(ESC 메뉴) → 공명자 / 무기 / 에코 / 환상 소환 / 임무 / 상점.
+  에코 장착 화면은 5개 슬롯과 코스트 제한이 핵심이며, 코스트 초과 시 장착이 막힌다.
+  전투 액션이 빠르고 화면 이펙트가 많아 전투 중 프레임은 상태 식별에 부적합하다.

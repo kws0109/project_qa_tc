@@ -1,0 +1,35 @@
+name: 원신
+window:
+  title_regex: "^(原神|Genshin Impact|원신)$"
+  process: GenshinImpact.exe
+capture_roi: full
+ui_language: ko
+is_emulator: false
+
+# 항상 변하는 HUD. 모션 마스크가 자동 학습하지만, 미리 알려주면 첫 세션부터 안정적이다.
+static_ignore:
+  - {x: 0.86, y: 0.00, w: 0.14, h: 0.055, why: "우측 상단 시계/서버 시간"}
+  - {x: 0.00, y: 0.00, w: 0.16, h: 0.10,  why: "좌측 상단 파티 HP/에너지"}
+  - {x: 0.00, y: 0.93, w: 0.22, h: 0.07,  why: "좌측 하단 채팅/알림 토스트"}
+
+key_hints:
+  esc: 메뉴/뒤로가기
+  m: 지도
+  c: 캐릭터
+  b: 가방
+  f: 상호작용
+  tab: 파티 정보
+input:
+  # 원신 필드에서는 Alt를 홀드해야 포인터가 활성화된다 (스타레일과 동일).
+  pointer_modifier: alt
+  ignore_keys: [w, a, s, d, space, ctrl, shift, q, e, f, r, t, x, z]
+  drop_unmodified_clicks: false
+
+llm_context: |
+  호요버스의 오픈월드 액션 RPG. PC/모바일 크로스플랫폼이며 UI는 가로 레이아웃이다.
+  주요 화면 계층: 필드(오픈월드 탐험) → ESC 메뉴(페이퍼몰) → 캐릭터 / 가방 / 지도 /
+  기원(가챠) / 상점 / 임무 / 이벤트 / 설정.
+  캐릭터 화면은 좌측에 캐릭터 목록, 우측에 속성/무기/성유물/재능/운명의자리 탭이 있다.
+  성유물·무기 강화 화면은 재료 선택 → 강화 버튼 → 결과 연출 순서로 진행된다.
+  기원 화면은 배너 탭 전환, 1회/10회 뽑기 버튼, 재화(인연/운명의 만남) 수량 표시가 핵심이다.
+  화면 전환에 0.3~0.8초 페이드가 있고, 캐릭터 대기 모션과 배경 파티클이 항상 움직인다.

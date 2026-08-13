@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qatc"
+version = "0.1.0"
+description = "게임 QA 테스트케이스 자동 생성 도구 (Game QA Test Case generator)"
+requires-python = ">=3.11"
+dependencies = [
+    # --- 캡처 (3중 폴백) ---
+    "mss>=10.0",                # 최후 폴백, 순수 python
+    "pywin32>=306; sys_platform=='win32'",
+    # --- 영상 처리 ---
+    "opencv-python>=4.10",
+    "numpy>=1.26",
+    "pillow>=10.0",
+    "imagehash>=4.3",
+    "scikit-learn>=1.4",
+    "scipy>=1.12",
+    # --- 입력 훅 ---
+    "pynput>=1.7",
+    # --- OCR ---
+    "rapidocr>=3.0",
+    "onnxruntime>=1.17",
+    # --- LLM ---
+    "anthropic>=0.40",
+    # --- 출력 ---
+    "openpyxl>=3.1",
+    # --- 기타 ---
+    "pyyaml>=6.0",
+    "keyring>=25.0",
+]
+
+[project.optional-dependencies]
+# 캡처 가속 백엔드. 없으면 mss로 폴백되므로 선택 설치.
+capture = [
+    "windows-capture>=1.4; sys_platform=='win32'",
+    "dxcam>=0.3; sys_platform=='win32'",
+]
+gui = ["PySide6>=6.7"]
+ocr-torch = ["easyocr>=1.7"]   # RapidOCR 한국어 정확도가 부족할 때의 대안
+dev = ["pytest>=8.0", "pytest-cov>=5.0"]
+package = ["pyinstaller>=6.0"]
+
+[project.scripts]
+qatc = "qatc.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["qatc*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
