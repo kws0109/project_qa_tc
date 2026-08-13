@@ -92,7 +92,7 @@ def test_filled_unknown_na_are_all_closed():
         assert s.is_closed is True, st
 
 
-def test_slot_spec_is_hashable_by_key():
+def test_slot_specs_with_same_key_differ_by_hint():
     a = SlotSpec(key="cost", prompt_hint="h1", tc_family="f1")
     b = SlotSpec(key="cost", prompt_hint="h2", tc_family="f2")
     assert a.key == b.key
@@ -1412,17 +1412,21 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ### Task 6: `qatc slot` 하위명령
 
 **Files:**
+- Create: `qatc/console.py`
 - Create: `qatc/cli_knowledge.py`
-- Modify: `qatc/cli.py` (`build_parser` 에 등록 한 줄)
+- Modify: `qatc/cli.py` (`_p` 를 `console` 에서 가져오고, `build_parser` 에 등록 한 줄)
 - Test: `tests/test_cli_slot.py`
 
 `cli.py` 가 이미 680줄이라 새 명령을 그 안에 넣으면 더 나빠진다. 지식 관련 명령은 별도 모듈에 두고 `cli.py` 는 등록 함수 하나만 부른다.
 
+`_p` 를 `qatc/console.py` 로 먼저 빼는 이유: `cli_knowledge.py` 가 `cli.py` 의 `_p` 를 쓰고 `cli.py` 가 `cli_knowledge.register` 를 쓰면 순환이 된다. 함수 안 import 로 덮으면 동작은 하지만 구조가 남는다. 양쪽이 의존하는 것을 제3의 모듈로 빼는 것이 정직한 해법이고, Task 11에서 `cli.py` 를 크게 손볼 때도 안 깨진다.
+
 **Interfaces:**
 - Consumes: `KnowledgeStore` (Task 3), `KNOWN_TYPES` (Task 2), `AppConfig.knowledge_path` (Task 3)
 - Produces:
+  - `qatc.console._p(msg: str = "") -> None` — Windows 코드페이지 안전 출력
   - `resolve_store(cfg, game: str | None, content: str | None) -> KnowledgeStore` — `--game` 이 없으면 컨텐츠를 가진 DB를 찾는다. 0개나 2개 이상이면 `SystemExit`
-  - `register(sub, parser_defaults) -> None` — argparse 하위파서 등록
+  - `register(sub) -> None` — argparse 하위파서 등록
   - `cmd_slot_status/init/set/add(args, cfg) -> int`
 
 - [ ] **Step 1: 실패하는 테스트 작성**
@@ -1541,7 +1545,37 @@ def test_ambiguous_content_across_games_fails(cfg_env, capsys):
 Run: `.venv\Scripts\python.exe -m pytest tests/test_cli_slot.py -v`
 Expected: FAIL — `argparse` 가 `slot` 을 모르는 명령으로 거부 (`SystemExit: 2`)
 
-- [ ] **Step 3: 구현**
+- [ ] **Step 3: `_p` 를 공유 모듈로 분리**
+
+`qatc/console.py` 를 만든다:
+
+```python
+"""콘솔 출력 헬퍼.
+
+`cli.py` 와 `cli_knowledge.py` 가 둘 다 쓴다. 한쪽에 두면 순환 import 가 되므로
+양쪽이 의존하는 제3의 모듈로 뺀다.
+"""
+
+from __future__ import annotations
+
+
+def _p(msg: str = "") -> None:
+    """콘솔 출력. Windows 기본 코드페이지에서 한글이 깨지지 않게 감싼다."""
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        print(msg.encode("utf-8", "replace").decode("utf-8", "replace"))
+```
+
+`qatc/cli.py` 에서 기존 `_p` 정의(29~34행)를 지우고 import 로 바꾼다:
+
+```python
+from .console import _p
+```
+
+`cli.py` 의 나머지 코드는 그대로 `_p(...)` 를 부르므로 다른 수정은 필요 없다.
+
+- [ ] **Step 4: 구현**
 
 `qatc/cli_knowledge.py`:
 
@@ -1562,16 +1596,11 @@ import json
 from pathlib import Path
 
 from .config import AppConfig
+from .console import _p
 from .knowledge.gate import plan_families
 from .knowledge.models import SlotStatus
 from .knowledge.slots import KNOWN_TYPES
 from .knowledge.store import KnowledgeStore
-
-
-def _p(msg: str = "") -> None:
-    from .cli import _p as base
-
-    base(msg)
 
 
 def resolve_store(cfg: AppConfig, game: str | None, content: str | None) -> KnowledgeStore:
@@ -1734,17 +1763,17 @@ def register(sub) -> None:
     _register_knowledge(sub)
 ```
 
-- [ ] **Step 4: 테스트 통과 확인**
+- [ ] **Step 5: 테스트 통과 확인**
 
 Run: `.venv\Scripts\python.exe -m pytest tests/test_cli_slot.py -v`
 Expected: PASS (10 passed)
 
-- [ ] **Step 5: 전체 회귀 확인**
+- [ ] **Step 6: 전체 회귀 확인**
 
 Run: `.venv\Scripts\python.exe -m pytest`
 Expected: 191 passed
 
-- [ ] **Step 6: 커밋**
+- [ ] **Step 7: 커밋**
 
 ```bash
 git add qatc/cli_knowledge.py qatc/cli.py tests/test_cli_slot.py
