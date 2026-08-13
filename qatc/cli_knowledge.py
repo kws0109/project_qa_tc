@@ -204,6 +204,56 @@ def _read_json_arg(source: str) -> dict:
     return json.loads(raw)
 
 
+#: `tc add` 항목에서 반드시 있어야 하는 필드.
+_REQUIRED_FIELDS = ("title", "steps", "expected")
+#: 문자열 배열이어야 하는 필드.
+_LIST_FIELDS = ("steps", "expected")
+#: `in` 검사에 집합 대신 튜플을 쓰는 이유: priority 자리에 배열·객체가 와도
+#: 해시 불가 예외 없이 그냥 "유효하지 않음"으로 떨어져야 한다.
+_PRIORITY_VALUES = tuple(p.value for p in Priority)
+
+
+def _validate_item(item: object, i: int) -> str | None:
+    """`tc add` JSON 항목 하나를 검사한다. 문제가 없으면 `None`.
+
+    이 명령의 호출자는 **인터뷰를 진행하는 모델**이라, 검증 실패는 사람이 읽는
+    예외가 아니라 모델이 고칠 수 있는 지시여야 한다. 그래서 모든 메시지가
+    (a) 몇 번째 항목의 (b) 어느 필드가 틀렸는지와 (c) 다음 조치를 함께 준다.
+
+    특히 `"steps": "한 줄"` 은 배열 자리에 문자열을 주는 가장 흔한 형태 오류인데,
+    truthiness 만 보면 통과한 뒤 문자열을 순회해 `['한', ' ', '줄']` 이 조용히
+    저장된다. 실패도 경고도 없이 쓰레기가 최종 xlsx 절차 칸까지 가므로 여기서 막는다.
+    """
+    if not isinstance(item, dict):
+        return (f"testcases[{i}] 가 객체가 아닙니다 ({type(item).__name__}). "
+                f'각 항목을 {{"title": "...", "steps": ["..."], "expected": ["..."]}} '
+                f"형태의 객체로 주세요.")
+
+    missing = [k for k in _REQUIRED_FIELDS if not item.get(k)]
+    if missing:
+        return (f"testcases[{i}] 에 필수 필드가 없습니다 — {', '.join(missing)}. "
+                f"{', '.join(_REQUIRED_FIELDS)} 를 모두 채워 다시 주세요.")
+
+    for field in _LIST_FIELDS:
+        value = item[field]
+        if not isinstance(value, list):
+            return (f"testcases[{i}].{field} 는 문자열 배열이어야 합니다 "
+                    f"({type(value).__name__} 이 왔습니다). "
+                    f'한 줄이어도 ["..."] 처럼 배열로 감싸세요.')
+        for j, element in enumerate(value):
+            if not isinstance(element, str):
+                return (f"testcases[{i}].{field}[{j}] 가 문자열이 아닙니다 "
+                        f"({type(element).__name__}). 배열의 원소는 모두 문자열이어야 합니다.")
+
+    priority = item.get("priority")
+    if priority and priority not in _PRIORITY_VALUES:
+        return (f"testcases[{i}].priority 값 '{priority}' 을(를) 알 수 없습니다. "
+                f"사용 가능: {', '.join(_PRIORITY_VALUES)}. "
+                f"생략하면 계열 기본 우선순위가 쓰입니다.")
+
+    return None
+
+
 def cmd_tc_add(args: argparse.Namespace, cfg: AppConfig) -> int:
     try:
         payload = _read_json_arg(args.json)
@@ -230,9 +280,9 @@ def cmd_tc_add(args: argparse.Namespace, cfg: AppConfig) -> int:
 
         cases: list[TestCase] = []
         for i, item in enumerate(items):
-            missing = [k for k in ("title", "steps", "expected") if not item.get(k)]
-            if missing:
-                _p(f"오류: testcases[{i}] 에 필수 필드가 없습니다 — {', '.join(missing)}")
+            error = _validate_item(item, i)
+            if error:
+                _p(f"오류: {error}")
                 return 1
             cases.append(TestCase(
                 id="",
