@@ -9,12 +9,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
+from ..models import TCOrigin, TestCase, new_id
 from .models import Content, Slot, SlotStatus
 from .slots import build_slot_set
 
@@ -203,3 +205,104 @@ class KnowledgeStore:
         )
         db.commit()
         return Slot(key=key, prompt_hint=prompt_hint, tc_family=tc_family, ord=len(current))
+
+    # -- 테스트케이스 ------------------------------------------------
+
+    def add_testcase(
+        self, content: str, family: str, tc: TestCase, slot_keys: Sequence[str]
+    ) -> TestCase:
+        """TC를 저장한다. `id` 가 비어 있으면 부여한다."""
+        if not tc.id:
+            tc.id = new_id("tc")
+        self._db().execute(
+            "INSERT OR REPLACE INTO testcases"
+            " (id, content, family, generated_hash, slot_keys, row)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                tc.id, content, family, testcase_hash(tc),
+                json.dumps(list(slot_keys), ensure_ascii=False),
+                json.dumps(tc.to_row(), ensure_ascii=False),
+            ),
+        )
+        self._db().commit()
+        return tc
+
+    def update_testcase_row(self, tc: TestCase) -> None:
+        """본문만 갱신한다. `generated_hash` 는 건드리지 않으므로 이후
+        :meth:`replace_generated` 가 '사용자가 고쳤다'로 판정한다."""
+        self._db().execute(
+            "UPDATE testcases SET row = ? WHERE id = ?",
+            (json.dumps(tc.to_row(), ensure_ascii=False), tc.id),
+        )
+        self._db().commit()
+
+    def testcases(self, content: str, family: str | None = None) -> list[TestCase]:
+        sql = "SELECT row FROM testcases WHERE content = ?"
+        args: list[str] = [content]
+        if family is not None:
+            sql += " AND family = ?"
+            args.append(family)
+        sql += " ORDER BY rowid"
+        return [TestCase.from_row(json.loads(r["row"])) for r in self._db().execute(sql, args)]
+
+    def replace_generated(
+        self,
+        content: str,
+        family: str,
+        cases: Sequence[TestCase],
+        slot_keys: Sequence[str],
+    ) -> tuple[int, int]:
+        """한 계열의 생성분을 갈아끼운다. 사람 손이 닿은 것은 보존한다.
+
+        보존 조건 두 가지 —
+        `origin=USER` 이거나, 저장된 본문 해시가 `generated_hash` 와 다른 것.
+        후자가 "사용자가 고쳤다"의 판정이다.
+
+        :returns: (추가한 수, 보존한 수)
+        """
+        db = self._db()
+        kept = 0
+        for r in db.execute(
+            "SELECT id, generated_hash, row FROM testcases WHERE content = ? AND family = ?",
+            (content, family),
+        ).fetchall():
+            tc = TestCase.from_row(json.loads(r["row"]))
+            edited = testcase_hash(tc) != r["generated_hash"]
+            if tc.origin is TCOrigin.USER or edited:
+                kept += 1
+                continue
+            db.execute("DELETE FROM testcases WHERE id = ?", (r["id"],))
+        db.commit()
+
+        for tc in cases:
+            self.add_testcase(content, family, tc, slot_keys)
+        return len(cases), kept
+
+
+def testcase_hash(tc: TestCase) -> str:
+    """TC 본문의 해시. `id` 와 `origin` 은 제외한다.
+
+    id는 저장 시 부여되는 것이고 origin은 메타데이터라, 둘 중 하나가 달라졌다고
+    "사용자가 고쳤다"로 볼 수 없다. 사람이 실제로 고치는 것은 제목·절차·기대결과다.
+    """
+    payload = json.dumps(
+        {
+            "category_major": tc.category_major,
+            "category_minor": tc.category_minor,
+            "title": tc.title,
+            "precondition": tc.precondition,
+            "steps": tc.steps,
+            "expected": tc.expected,
+            "priority": tc.priority.value,
+            "kind": tc.kind.value,
+            "rationale": tc.rationale,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+#: pytest가 이름이 `test`로 시작하는 이 함수를 테스트로 수집하지 않게 막는다
+#: (qatc.models.TestCase.__test__ 와 동일한 이유의 오탐 방지).
+testcase_hash.__test__ = False
