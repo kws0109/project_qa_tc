@@ -581,7 +581,7 @@ def build_parser() -> argparse.ArgumentParser:
     session_arg(nm)
     nm.set_defaults(func=cmd_name)
 
-    tc = sub.add_parser("tc", help="테스트케이스 생성")
+    tc = sub.add_parser("legacy-tc", help="테스트케이스 생성")
     session_arg(tc)
     tc.add_argument("--happy-only", action="store_true",
                     help="정상 경로만 생성 (추론 TC 제외 — 비용 절감)")
