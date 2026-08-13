@@ -24,14 +24,7 @@ from pathlib import Path
 from typing import Callable
 
 from .config import AppConfig, get_api_key, set_api_key
-
-
-def _p(msg: str = "") -> None:
-    """콘솔 출력. Windows 기본 코드페이지에서 한글이 깨지지 않게 감싼다."""
-    try:
-        print(msg)
-    except UnicodeEncodeError:
-        print(msg.encode("utf-8", "replace").decode("utf-8", "replace"))
+from .console import _p
 
 
 def _progress() -> Callable[[str, float], None]:
@@ -551,6 +544,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    from .cli_knowledge import register as _register_knowledge
+    _register_knowledge(sub)
+
     def session_arg(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("session", nargs="?", default="latest",
                         help="세션 ID 또는 경로 (기본: 가장 최근 세션)")
@@ -640,7 +636,10 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         _p("\n중단되었습니다.")
         return 130
-    except SystemExit:
+    except SystemExit as exc:
+        if isinstance(exc.code, str):
+            _p(f"오류: {exc.code}")
+            return 1
         raise
     except Exception as exc:
         _p(f"\n오류: {type(exc).__name__}: {exc}")
