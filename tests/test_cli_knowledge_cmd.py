@@ -343,11 +343,22 @@ def test_export_default_filename_survives_a_backslash_in_the_content_name(cfg_en
 
 @pytest.fixture()
 def real_config(tmp_path, monkeypatch):
-    """진짜 `AppConfig.load()` 가 임시 폴더의 설정 파일만 보게 만든다.
+    """`cmd_config`·`AppConfig.load()` 자체의 파일 처리를 시험할 **빈 자리**를 만든다.
 
-    `cfg_env` 는 `load()` 자체를 갈아끼우므로 설정 **파일** 을 검사할 수 없다.
-    여기서는 `APPDATA` 와 `project_root()` 를 임시 폴더로 돌려, 실제 파일
-    입출력을 그대로 태우되 저장소와 개발자 기계에는 손대지 않는다.
+    `cfg_env` 도 이제 진짜 `save()` 를 태우므로 설정 파일 자체는 그쪽으로도
+    들여다볼 수 있다 (`test_cfg_env_isolates_the_real_user_config` 가 그렇게
+    한다). 그런데 `cfg_env` 는 픽스처 실행 시점에 **이미 유효한** 설정을
+    (고정된 knowledge_root·profiles_dir 로) 저장해 둔다 — slot·tc·export 같은
+    명령이 바로 쓸 수 있는 "이미 갖춰진 앱" 을 주는 게 목적이다.
+
+    여기 아래 테스트들은 정반대를 원한다: 파일이 아직 없는 상태(첫 실행 생성
+    문구 확인), 이미 있는 파일을 절대 다시 쓰지 않는지, 문법이 깨진 JSON, 최상위가
+    객체가 아닌 JSON — 즉 파일의 **부재·내용을 테스트가 직접 통제**해야 한다.
+    `project_root()` 도 함께 돌리는 이유는 파일이 없을 때 `AppConfig()` 의
+    기본값이 거길 참조하기 때문이다 — `cfg_env` 는 생성자에 경로를 항상 명시로
+    넘기므로 이 기본값 경로를 아예 타지 않는다. 그래서 `real_config` 는
+    `APPDATA` 와 `project_root()` 만 임시 폴더로 돌리고 파일 자체는 건드리지
+    않은 채 남겨 둔다.
     """
     import qatc.config as config
 
