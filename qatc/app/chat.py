@@ -111,6 +111,14 @@ def stream_turn(
         "--session-id", session_id,
         "--output-format", "stream-json",
         "--input-format", "stream-json",
+        # 실측(라이브 스모크 테스트, 테스트가 아니라 진짜 `claude` 실행 파일로
+        # 확인): `--print` 와 `--output-format=stream-json` 을 같이 주면
+        # `--verbose` 없이는 `claude` 가 즉시 이 오류로 거부한다 —
+        # "Error: When using --print, --output-format=stream-json requires
+        # --verbose". 가짜 `claude` 는 인자를 검증하지 않으므로 테스트
+        # 스위트는 이걸 잡을 수 없었다. 옆의 `--output-format` 과 중복처럼
+        # 보여도 지우지 말 것 — 지우면 실제 대화가 3초 만에 죽는다.
+        "--verbose",
         "--append-system-prompt", _skill_prompt(),
         "--model", "opus",
     ]

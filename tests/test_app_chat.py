@@ -276,3 +276,67 @@ def test_stderr_reason_reaches_the_error_event_on_a_crash(cfg, tmp_path):
     errs = [e for e in evs if e.kind == "error"]
     assert len(errs) == 1
     assert "FATAL: something broke badly" in errs[0].data["message"]
+
+
+# --- `--verbose` — 라이브 스모크 테스트가 잡은 결함 -------------------------
+#
+# 실측: 473개 테스트가 전부 통과한 채로 앱을 실제로 띄워 메시지 하나를
+# 보냈더니 3초 만에 죽었다. 진짜 `claude` 실행 파일은 `--print`(`-p`) 와
+# `--output-format=stream-json` 을 같이 받으면 `--verbose` 없이는 즉시
+# 거부한다 ("Error: When using --print, --output-format=stream-json requires
+# --verbose"). 가짜 `claude` 는 자기 인자를 전혀 검증하지 않으므로 이 조합은
+# 기존 테스트 473개 중 어느 것도 잡을 수 없었다 — 그래서 여기 하나를 붙여
+# `--output-format stream-json` 이 있으면 `--verbose` 도 반드시 같이 있게
+# 고정한다.
+
+
+def test_verbose_flag_accompanies_stream_json_output(cfg, tmp_path):
+    """`--output-format` 이 `stream-json` 이면 `--verbose` 도 반드시 같이 있어야 한다.
+
+    이 하나가 빠지면 실제 `claude` 는 헤드리스 턴을 시작조차 못 하고
+    거부하는데, 가짜 `claude` 는 그 거부를 흉내 내지 않으므로 다른 어떤
+    테스트도 이 결함을 못 잡는다.
+    """
+    record = tmp_path / "record.json"
+    evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=record)))
+    assert evs
+    argv = json.loads(record.read_text(encoding="utf-8"))["argv"]
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in argv
+
+
+# --- 실제 스트림의 시작 모양 — 가짜가 한 번도 낸 적 없는 프레임들 -----------
+#
+# 라이브 스모크 테스트로 실측한 진짜 `claude --output-format stream-json
+# --verbose` 출력은 `assistant`/`result` 가 아니라 `system` 타입 프레임
+# (`hook_started` 등) 으로 시작한다. `_events_from` 은 모르는 `type` 은 그냥
+# 건너뛰므로(빈 제너레이터를 돌려주므로) 파싱 루프는 이미 이걸 견딘다 —
+# 이 테스트는 그 관대함이 실제로 성립함을 고정하고, 가짜의 스트림 모양을
+# 실측에 맞춘다.
+
+SYSTEM_OPENING_LINES = [
+    json.dumps({"type": "system", "subtype": "hook_started",
+                "hook_id": "h1", "hook_name": "SessionStart:startup"},
+               ensure_ascii=False),
+    json.dumps({"type": "system", "subtype": "hook_finished",
+                "hook_id": "h1", "hook_name": "SessionStart:startup"},
+               ensure_ascii=False),
+    json.dumps({"type": "system", "subtype": "init", "session_id": "abc",
+                "model": "claude-opus-4", "tools": ["Bash"]},
+               ensure_ascii=False),
+]
+
+REALISTIC_OPENING_LINES = SYSTEM_OPENING_LINES + OK_LINES
+
+
+def test_unknown_system_frames_before_the_turn_are_ignored(cfg, tmp_path):
+    """`system`/`hook_started` 류로 시작하는 실제 스트림 모양을 견뎌야 한다.
+
+    이 프레임들이 섞여도 뒤이은 delta·tool·done 은 평소와 똑같이 나와야
+    한다 — 말줄임 없이, 순서도 그대로.
+    """
+    evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(
+        tmp_path, REALISTIC_OPENING_LINES)))
+    assert [e.kind for e in evs] == ["delta", "tool", "done"]
+    assert "".join(e.data["text"] for e in evs if e.kind == "delta") == "안녕"
