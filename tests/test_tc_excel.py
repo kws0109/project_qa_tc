@@ -171,3 +171,29 @@ def test_summary_counts_withdrawn_testcases(make_tc, tmp_path):
                         withdrawn={"정상 경로"})
     ws = load_workbook(p)["요약"]
     assert _summary_value(ws, "근거 철회된 TC") == "1"
+
+
+def test_locked_output_directory_also_raises_export_blocked(monkeypatch, tmp_path):
+    """출력 **디렉터리** 를 만들 수 없을 때도 같은 안내가 나와야 한다.
+
+    `wb.save` 는 Task 5 에서 막혔지만 `path.parent.mkdir` 이 try 밖에 있었다.
+
+    실측 (이 환경): `os.chmod(dir, stat.S_IREAD)` 로 디렉터리를 잠그고 그 밑에
+    `mkdir` 을 시도해도 Windows 에서는 자식 생성이 막히지 않았다 —
+    `ExportBlocked` 는커녕 어떤 예외도 나지 않고 그대로 성공했다 (브리핑의 경고와
+    일치). 그래서 OS 잠금 대신 `Path.mkdir` 자체를 실패하게 만들어, `mkdir` 이
+    `wb.save` 와 같은 `try`/`except PermissionError` 안에 있는지를 직접 검증한다.
+    """
+    from pathlib import Path
+
+    import pytest
+
+    from qatc.export.tc_excel import ExportBlocked, export_tc_excel
+
+    def _denied(self, *a, **k):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "mkdir", _denied)
+    with pytest.raises(ExportBlocked) as e:
+        export_tc_excel("컨텐츠", [], [], tmp_path / "하위" / "out.xlsx")
+    assert "PermissionError" not in str(e.value)

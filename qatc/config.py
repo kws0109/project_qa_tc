@@ -93,5 +93,11 @@ class AppConfig:
             "profiles_dir": self.profiles_dir,
             "default_game": self.default_game,
         }
-        f.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            f.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        except PermissionError as exc:
+            raise SystemExit(
+                f"설정 파일에 쓸 수 없습니다 — {f}. "
+                f"다른 프로그램이 열고 있으면 닫고, 파일 권한을 확인한 뒤 다시 시도하세요."
+            ) from exc
         return f

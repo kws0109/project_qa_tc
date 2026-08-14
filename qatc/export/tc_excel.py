@@ -157,13 +157,13 @@ def export_tc_excel(
         표시만 하므로, 이 값이 비어 있으면 산출물이 자기모순 상태로 나간다.
     """
     path = Path(out_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
 
     wb = Workbook()
     _sheet_testcases(wb, testcases, withdrawn)
     _sheet_skipped(wb, skipped, withdrawn)
     _sheet_summary(wb, content, testcases, skipped, withdrawn)
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         wb.save(path)
     except PermissionError as exc:
         raise ExportBlocked(
