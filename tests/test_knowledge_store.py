@@ -52,6 +52,18 @@ def test_set_slot_on_missing_content_raises(store):
 
 
 def test_init_content_again_preserves_existing_values(store):
+    """재실행은 기본 슬롯이든 **유형 접두 슬롯이든** 채워진 답을 건드리지 않는다.
+
+    유형 슬롯을 따로 확인하는 이유 — 기본 슬롯(`core_action`)만 보면 "유형
+    슬롯의 값만 비운다" 는 회귀를 아무도 보지 못한다. 실측으로 확인했다:
+    `init_content` 끝에 `UPDATE slots SET status='empty', value='' WHERE key
+    LIKE '%.%'` 한 줄을 넣어도 전체 스위트가 초록이었다. 슬롯 **개수** 를 세는
+    검사는 값이 비는 것을 볼 수 없기 때문이다.
+
+    이건 실제로 밟는 경로다 — SKILL.md 1단계는 대화에서 새 유형이 드러날 때마다
+    `slot init --types` 를 다시 부르라고 지시하므로, 두 번째·세 번째 호출이 앞서
+    받은 답을 지우면 인터뷰가 통째로 되감긴다.
+    """
     store.init_content("파티편성", game="starrail", types=[])
     store.set_slot("파티편성", "core_action", SlotStatus.FILLED, "파티를 짠다")
     store.init_content("파티편성", game="starrail", types=["편성"])
@@ -61,6 +73,16 @@ def test_init_content_again_preserves_existing_values(store):
     assert slots["core_action"].status is SlotStatus.FILLED
     assert "편성.정원" in slots
     assert slots["편성.정원"].status is SlotStatus.EMPTY
+
+    # 유형 슬롯을 채운 뒤 또 다른 유형을 덧붙인다 — 그 답도 그대로 남아야 한다
+    store.set_slot("파티편성", "편성.정원", SlotStatus.FILLED, "최대 4명")
+    store.init_content("파티편성", game="starrail", types=["성장"])
+
+    slots = {s.key: s for s in store.slots("파티편성")}
+    assert slots["편성.정원"].value == "최대 4명", "재실행이 유형 슬롯의 답을 지웠다"
+    assert slots["편성.정원"].status is SlotStatus.FILLED
+    assert slots["core_action"].value == "파티를 짠다"
+    assert "성장.재료" in slots               # 새 유형은 그래도 붙는다
 
 
 def test_init_content_again_accumulates_types(store):
@@ -148,6 +170,12 @@ def test_set_slot_rejects_filled_with_invisible_only_value(store, value, label):
     "빈 근거" 구멍이 제로폭 공백 하나로 그대로 다시 열렸다 (실측:
     `slot set ... --status filled --value <U+200B>` → `✓ cost = filled` rc=0,
     이어서 `tc plan` 의 `planned` 에 `재화 부족` 이 등장).
+
+    **`line-separator`(U+2028) 는 이 설명의 예외다.** 목록에서 그것만
+    `isspace()` 라 `strip()` 가드도 이미 잡았다 — `is_blank` 를
+    `not text.strip()` 로 되돌리면 61건이 깨지는데 이 파라미터는 초록으로
+    남는다 (실측). 목록에 둔 이유는 가드가 **통째로** 사라진 경우를 여전히
+    잡기 때문이다.
 
     이 검사는 설계상 **최후 방어선**이라, 입력이 흔한지 여부가 아니라 구멍이
     뚫려 있는지 여부로 심각도가 정해진다. 붙여넣기 텍스트의 BOM·제로폭 문자는

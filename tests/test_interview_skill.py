@@ -331,23 +331,61 @@ def _step1(text: str) -> str:
     return text[text.index("## 1단계"):text.index("## 2단계")]
 
 
-def test_skill_step1_asks_the_overview_before_running_slot_init():
-    """유형을 **듣기 전에** `slot init` 을 실행하라고 지시하면 안 된다.
+def _new_content_branch(step1: str) -> str:
+    """`slot status` 가 "신규 컨텐츠" 라고 답했을 때 무엇을 하라고 적힌 분기.
 
-    예전 1단계는 "`slot init` 을 실행하고 개괄 질문으로 시작한다" 라고 해 놓고
-    아래에서 "답변에서 유형을 판정한다" 라고 했다 — 유형을 들어보기 전에
-    추측하라는 뜻이 된다. `slot init` 은 가산 전용이라 잘못 넣은 유형의 슬롯을
-    CLI 로 지울 수 없으므로, 그 추측은 되돌릴 수 없는 실수다.
+    1단계는 `slot status` 출력별로 갈라지는 목록이고, **`slot init` 을 언제
+    부를지는 이 분기 안에서만 정해진다.** 1단계 전체를 한 덩어리로 검사하면
+    아래 "왜 개괄이 먼저인가" 근거 블록의 문구가 섞여 들어와, 정작 모델이
+    따르는 지시문이 뒤집혀도 검사가 통과한다.
+    """
+    rest = step1[step1.index("신규 컨텐츠다"):]
+    return rest[:rest.index("\n- **")]          # 다음 최상위 분기 직전까지
+
+
+def test_skill_step1_tells_the_model_to_hold_slot_init_until_the_overview_answer():
+    """신규 컨텐츠 분기는 `slot init` 을 **개괄 답변 뒤로 미루라고** 말해야 한다.
+
+    라운드 1c 이전 판은 같은 자리에서 "게임 이름을 확보한 뒤 아래 `slot init`
+    을 실행하고 개괄 질문으로 시작한다" · "곧장 `slot init` 으로 간다" 라고
+    했다 — 설명을 듣기 전에 유형을 추측하라는 뜻이고, `slot init` 은 가산
+    전용이라 (`qatc slot` 에 제거 명령이 없다) 그 추측은 되돌릴 수 없다.
+
+    **문자열 오프셋 비교로는 이 결함을 잡을 수 없다.** 1c 가 고친 것은 산문이고
+    `slot init` 코드 펜스는 원래부터 개괄 질문 뒤에 있었다 — 08aa57c 실측으로
+    개괄 질문 1182 · "답변에서 유형을 판정한다" 1250 · 펜스 1357 이라 부등식
+    셋이 모두 성립했다. 그래서 여기서는 지시문 자체를 **양방향으로** 고정한다:
+    미루라는 문장이 있어야 하고, 지금 실행하라는 문장이 남아 있으면 안 된다.
+    한쪽만 검사하면 두 지시가 동시에 적힌 모순된 개정을 통과시킨다.
+    """
+    branch = _new_content_branch(_step1(SKILL.read_text(encoding="utf-8")))
+
+    assert "**`slot init` 은 아직 실행하지 말고**" in branch, (
+        "신규 컨텐츠 분기에 `slot init` 을 개괄 뒤로 미루라는 지시가 없습니다"
+    )
+    # 인용된 CLI 오류 문구("...'qatc slot init ...'을 실행하세요")는 백틱이 없어
+    # 여기 걸리지 않는다 — 모델에게 주는 지시문만 본다.
+    for imperative in ("`slot init` 을 실행하고", "곧장 `slot init` 으로"):
+        assert imperative not in branch, (
+            f"개괄을 듣기 전에 실행하라는 지시가 살아 있습니다: {imperative!r}"
+        )
+
+
+def test_skill_step1_puts_the_slot_init_command_under_the_after_the_answer_heading():
+    """`slot init` 명령줄은 "답을 들은 뒤" 라고 말하는 절에 있어야 한다.
+
+    산문과 별개로, 명령을 옮겨 적는 쪽이 실제로 보는 것은 **코드 펜스가 어느
+    절에 있는가**다. 소제목이 사라지거나 펜스가 개괄 질문 절로 올라가면 문서
+    구조만 봐도 순서가 뒤집힌 것이므로 여기서 깨진다.
     """
     step1 = _step1(SKILL.read_text(encoding="utf-8"))
 
-    question = step1.index("먼저 이 컨텐츠가 어떤 것인지 설명해주세요")
-    init = step1.index(".venv/Scripts/qatc.exe slot init")
-    assert question < init, "개괄 질문이 slot init 뒤에 있다"
-
-    # 유형 판정도 답변 뒤여야 한다
-    decide = step1.index("답변에서 유형을 판정한다")
-    assert question < decide < init
+    fence = step1.index(".venv/Scripts/qatc.exe slot init")
+    heads = re.findall(r"^### (.+)$", step1[:fence], re.M)
+    assert heads, "`slot init` 명령줄 위에 소제목이 하나도 없습니다"
+    assert "답을 들은 뒤" in heads[-1], (
+        f"`slot init` 이 '{heads[-1]}' 절에 있습니다 — 답변을 들은 뒤라는 표시가 없습니다"
+    )
 
 
 def test_skill_step1_explains_that_slot_init_cannot_be_undone():
@@ -370,7 +408,14 @@ def test_slot_has_no_command_that_removes_a_slot():
 def test_slot_init_is_additive_and_keeps_wrongly_guessed_type_slots(cfg_env, capsys):
     """문서가 근거로 드는 동작을 실제로 실행해 확인한다.
 
-    잘못 추측한 유형으로 만든 뒤 `--types` 없이 다시 실행해도 그 슬롯은 남는다.
+    잘못 추측한 유형으로 만든 뒤 `--types` 없이 다시 실행해도 그 슬롯은 남고,
+    **거기 적힌 답도 남는다.**
+
+    개수만 세면 안 되는 이유 — 슬롯은 그대로 두고 값만 비우는 회귀는 `total`
+    비교를 그대로 통과한다 (실측: `init_content` 가 재실행 때 유형 접두 슬롯의
+    status·value 를 비우게 만들어도 전체 스위트가 초록이었다). 사용자 입장에서
+    답이 지워진 슬롯은 사라진 슬롯과 같고, SKILL.md 가 "기존 값과 상태는
+    보존된다" 라고 약속하는 것이 바로 이 부분이다.
     """
     assert main(["slot", "init", "유형추측", "--game", "starrail", "--types", "던전"]) == 0
     capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
@@ -379,9 +424,19 @@ def test_slot_init_is_additive_and_keeps_wrongly_guessed_type_slots(cfg_env, cap
     assert before["total"] == 14
     assert any(s["key"].startswith("던전.") for s in before["open"])
 
+    # 잘못 추측한 유형의 슬롯에도 사용자는 답을 적는다 — 그 답이 곧 근거다
+    assert main(["slot", "set", "유형추측", "던전.제한시간",
+                 "--status", "filled", "--value", "3분"]) == 0
+    capsys.readouterr()
+
     assert main(["slot", "init", "유형추측", "--game", "starrail"]) == 0
     capsys.readouterr()
     main(["slot", "status", "유형추측", "--json"])
     after = json.loads(capsys.readouterr().out)
     assert after["total"] == 14, "가산 전용이 아니게 되었다면 SKILL.md 도 고쳐야 한다"
     assert any(s["key"].startswith("던전.") for s in after["open"])
+
+    closed = {s["key"]: s for s in after["closed"]}
+    assert "던전.제한시간" in closed, "재실행이 유형 슬롯의 답을 지웠다"
+    assert closed["던전.제한시간"]["value"] == "3분"
+    assert closed["던전.제한시간"]["status"] == "filled"

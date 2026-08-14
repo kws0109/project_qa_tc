@@ -281,6 +281,10 @@ def test_set_filled_with_invisible_only_value_is_rejected(cfg_env, capsys, value
     **생성 대상 계열로 계획했다.** 보이지 않는 문자 하나가 계열을 연 것이다.
     라운드 1a 가 Critical 로 막은 구멍이 `strip()` 의 한계(= `isspace()` 인
     문자만 지운다)를 통해 그대로 다시 열려 있었다.
+
+    단, `line-separator`(U+2028) 파라미터에는 이 설명이 해당하지 않는다 —
+    그것만 `isspace()` 라 `strip()` 가드도 이미 잡았다. 사정은
+    `conftest.INVISIBLE_VALUES` 의 해당 항목 주석에 적혀 있다.
     """
     main(["slot", "init", "파티편성", "--game", "starrail"])
     capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
