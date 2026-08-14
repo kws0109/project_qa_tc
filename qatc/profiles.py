@@ -47,9 +47,26 @@ class GameProfile:
         판정 방식과 문구는 `AppConfig.load` 의 같은 실패 유형(설정 JSON 의
         최상위가 객체가 아님)에서 그대로 가져왔다 — 두 로더가 사람이 손으로
         만드는 같은 형태의 깨짐을 다르게 대접할 이유가 없다.
+
+        **`None` 만 `{}` 로 받는다.** 예전에는 `safe_load(...) or {}` 를 위
+        판정보다 **먼저** 했는데, 그러면 `[]` · `0` · `''` · `false` 처럼
+        **거짓값인** 최상위가 전부 `{}` 로 정규화돼 판정에 닿지도 못했다 —
+        건너뛰어지는 대신 **파일명을 키로 한 프로파일로 조용히 등록**됐다
+        (실측: `[]` 만 든 `empty-list.yaml` → `profiles=['empty-list',
+        'starrail']`). 이름으로 건너뛴다는 이 도크스트링의 약속이 참값
+        형태에서만 지켜지고 있었던 셈이다.
+
+        반대로 `None` 을 `{}` 로 받는 것은 **의도된 오래된 동작**이라 남긴다:
+        빈 파일 · `null` · 주석뿐인 파일은 유효한 프로파일이고, `name` 이
+        없으면 파일명이 표시 이름을 대신한다 (`from_dict`). 그것까지 건너뛰면
+        등록돼 있던 게임이 목록에서 사라져 그 게임의 생성 명령이 통째로
+        거부된다. 그래서 `or {}` 를 판정 뒤로 옮기는 것으로는 부족하다 —
+        `None` 만 따로 걸러야 한다.
         """
         p = Path(path)
-        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        data = yaml.safe_load(p.read_text(encoding="utf-8"))
+        if data is None:                    # 빈 파일 · `null` · 주석뿐인 파일
+            data = {}
         if not isinstance(data, dict):
             raise ValueError(f"최상위가 객체가 아닙니다 ({type(data).__name__})")
         return cls.from_dict(p.stem, data)
