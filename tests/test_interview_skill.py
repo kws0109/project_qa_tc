@@ -139,6 +139,56 @@ def test_skill_step1_branches_on_the_real_cli_messages(cfg_env, capsys):
         assert quoted in text, f"SKILL.md 가 다루지 않는 1단계 문구: {quoted!r}"
 
 
+def test_skill_step1_covers_the_ambiguous_content_message(cfg_env, capsys):
+    """1단계 분기 (b) — 같은 이름의 컨텐츠가 두 게임 DB에 있을 때.
+
+    위 테스트가 봉인한 세 문구와 달리 이 네 번째 문구는 어느 테스트도 잡고 있지
+    않았다. 최종 게이트에서 문구를 `여러 게임에 존재합니다` 로 바꿔 봤더니
+    **스위트가 그대로 초록이었다** (F4). 이 분기가 무너지면 모델은 게임이 둘인
+    상황에서 무엇을 해야 하는지 모른 채 멈춘다.
+
+    **바이트 단위로 통째로 비교할 수는 없다.** 실제 출력의 괄호 안에는 그 컨텐츠를
+    가진 게임 목록(`(genshin, starrail)`)이 들어가는데 SKILL.md 는 그 자리를
+    `(...)` 로 줄여 적었다. 그래서 고정된 부분만 못박는다:
+
+    1. 괄호 **앞**의 문장 — 컨텐츠 이름만 자리표시자로 바꿔 SKILL.md 에서 찾는다.
+    2. 괄호 **안**이 실제 게임 목록인지 — `(...)` 로 줄인 것이 무엇인지 확인한다.
+    3. 괄호 **뒤**가 여전히 `--game` 을 지시하는지 — 이 문구의 값어치는 다음
+       조치를 말해 주는 데 있다. 그게 사라지면 분기 설명도 근거를 잃는다.
+    4. SKILL.md 의 그 분기 자체가 `--game` 을 붙여 다시 부르라고 말하는지.
+    """
+    for game in ("starrail", "genshin"):
+        assert main(["slot", "init", "파티편성", "--game", game]) == 0
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    assert main(["slot", "status", "파티편성"]) == 1
+    msg = capsys.readouterr().out.strip()
+
+    head, opened, rest = msg.partition("(")
+    games, closed, tail = rest.partition(")")
+    assert opened and closed, f"괄호로 게임 목록을 싣지 않습니다: {msg!r}"
+    assert sorted(g.strip() for g in games.split(",")) == ["genshin", "starrail"], msg
+
+    step1 = _step1(SKILL.read_text(encoding="utf-8"))
+    quoted = head.replace("'파티편성'", "'<컨텐츠>'") + "("
+    assert quoted in step1, f"SKILL.md 1단계가 다루지 않는 문구: {quoted!r}"
+
+    # 문구 자신이 다음 조치를 말해야 한다
+    assert "--game" in tail, f"괄호 뒤가 --game 을 지시하지 않습니다: {msg!r}"
+
+    # 그리고 그 분기가 --game 을 붙여 다시 부르라고 지시해야 한다
+    lines = step1.splitlines()
+    start = next(i for i, ln in enumerate(lines) if quoted in ln)
+    branch = []
+    for ln in lines[start:]:
+        if branch and ln.startswith("- "):
+            break
+        branch.append(ln)
+    assert "--game" in " ".join(branch), (
+        f"1단계 (b) 분기가 --game 을 다시 부르라고 말하지 않습니다: {branch!r}"
+    )
+
+
 def test_skill_says_the_game_name_comes_from_the_user(cfg_env):
     """`<게임>` 을 어떻게 정하는지 1단계가 말해야 한다.
 
