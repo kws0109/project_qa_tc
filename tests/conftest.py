@@ -61,19 +61,29 @@ INVISIBLE_IDS = [
 
 @pytest.fixture()
 def cfg_env(tmp_path, monkeypatch):
-    """`AppConfig.load()` 가 임시 디렉터리만 보게 만든다. 반환값은 knowledge 루트.
+    """`qatc` 가 임시 디렉터리만 보게 만든다. 반환값은 knowledge 루트.
 
-    예전 세 벌은 진짜 `AppConfig.load()` 를 먼저 호출한 뒤 `knowledge_root` 만
-    덮어썼다. 실제로 새는 값은 `profiles_dir` 하나뿐이고 어떤 CLI 테스트도 그걸
-    쓰지 않지만, **테스트 결과가 개발자 기계의 설정 파일에 달려 있다**는 것
-    자체가 재현성 구멍이다. 여기서는 두 경로를 직접 주어 디스크를 읽지 않는다.
+    **진짜 `AppConfig.load()` 를 쓴다.** 예전에는 `load` 를 monkeypatch 해서
+    고정된 경로를 돌려줬는데, 그러면 `qatc config --game` 이 저장한 값을
+    되읽을 수 없어 기본 게임을 테스트할 방법이 없다.
+
+    `APPDATA` 를 임시 폴더로 돌리는 것이 **필수**다. `AppConfig.config_file()`
+    이 `%APPDATA%\\qatc\\config.json` 이므로, 격리하지 않으면 테스트 안의
+    `cfg.save()` 가 개발자의 실제 설정 파일을 덮어쓴다.
+
+    프로파일 YAML 두 개를 실제로 만든다. `validate_game` 은 프로파일이 0개면
+    검증을 건너뛰므로, 파일이 없으면 "오타를 거부한다"는 테스트가 아무것도
+    검증하지 못한다.
     """
+    appdata = tmp_path / "appdata"
     kroot = tmp_path / "knowledge"
+    pdir = tmp_path / "profiles"
+    pdir.mkdir(parents=True, exist_ok=True)
+    for key, name in (("starrail", "붕괴 스타레일"), ("genshin", "원신")):
+        (pdir / f"{key}.yaml").write_text(f"name: {name}\n", encoding="utf-8")
 
-    def patched() -> AppConfig:
-        return AppConfig(knowledge_root=str(kroot), profiles_dir=str(tmp_path / "profiles"))
-
-    monkeypatch.setattr(AppConfig, "load", staticmethod(patched))
+    monkeypatch.setenv("APPDATA", str(appdata))
+    AppConfig(knowledge_root=str(kroot), profiles_dir=str(pdir)).save()
     return kroot
 
 

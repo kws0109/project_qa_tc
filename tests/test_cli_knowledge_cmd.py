@@ -6,7 +6,6 @@ import pytest
 
 from qatc.cli import build_parser, main
 from qatc.cli_knowledge import _safe_filename_part
-from qatc.config import AppConfig
 from qatc.console import display_width
 from qatc.knowledge.store import is_locked_error
 
@@ -248,22 +247,20 @@ def test_non_lock_operational_error_still_shows_the_real_cause(cfg_env, capsys, 
 # --- 픽스처 격리 (이월 #14 · Minor 7) ------------------------------------
 
 
-def test_cfg_env_never_reads_the_real_config_file(cfg_env, tmp_path, monkeypatch):
-    """픽스처가 개발자 기계의 설정 파일을 읽으면 안 된다.
+def test_cfg_env_isolates_the_real_user_config(cfg_env, capsys):
+    """픽스처 안에서 저장해도 개발자의 실제 설정 파일은 건드리지 않는다.
 
-    예전 세 벌은 진짜 `AppConfig.load()` 를 먼저 부른 뒤 `knowledge_root` 만
-    덮어썼다. 그래서 실제 ``%APPDATA%/qatc/config.json`` 의 `profiles_dir` 가
-    테스트로 새고, `user_config_dir()` 이 그 폴더를 만들기까지 했다.
-    `config_file()` 이 호출되면 즉시 실패하게 만들어 그 회귀를 잡는다.
+    이 테스트가 없으면 `save()` 를 부르는 테스트가 하나 늘어날 때마다
+    개발자의 `%APPDATA%\\qatc\\config.json` 이 조용히 덮어써진다.
     """
-    def _boom():
-        raise AssertionError("테스트가 실제 설정 파일 경로를 읽었다")
+    import os
+    from pathlib import Path
 
-    monkeypatch.setattr(AppConfig, "config_file", staticmethod(_boom))
+    from qatc.config import AppConfig
 
-    cfg = AppConfig.load()
-    assert Path(cfg.knowledge_root) == cfg_env
-    assert Path(cfg.profiles_dir).is_relative_to(tmp_path)
+    here = AppConfig.config_file()
+    assert str(cfg_env.parent) in str(here), f"설정 파일이 임시 폴더 밖이다: {here}"
+    assert Path(os.environ["APPDATA"]).is_relative_to(cfg_env.parent)
 
 
 # --- 파일명 살균 규칙 (T2 · M3 · M16) ------------------------------------
