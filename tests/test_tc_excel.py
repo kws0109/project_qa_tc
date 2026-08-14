@@ -1,7 +1,10 @@
+import os
+import stat
+
 import pytest
 from openpyxl import load_workbook
 
-from qatc.export.tc_excel import clean_cell, export_tc_excel
+from qatc.export.tc_excel import ExportBlocked, clean_cell, export_tc_excel
 from qatc.knowledge.gate import FamilySkip
 from qatc.knowledge.models import SlotStatus
 from qatc.models import TCOrigin
@@ -77,6 +80,27 @@ def test_export_summary_counts_by_origin(make_tc, tmp_path):
     # 뒤지면 데이터가 비어 있어도 통과한다. 라벨로 실제 행을 찾아 집계값을 확인한다.
     assert _summary_value(ws, "출처별") == "인터뷰 1, 추론됨 1"
     assert _summary_value(ws, "유형별") == "정상 2"
+
+
+def test_locked_target_raises_export_blocked_with_next_action(tmp_path):
+    """Excel 이 열어둔 파일에 쓰려 할 때. 읽기 전용으로 같은 조건을 만든다."""
+    out = tmp_path / "잠김.xlsx"
+    export_tc_excel("컨텐츠", [], [], out)          # 1차 — 정상
+    os.chmod(out, stat.S_IREAD)
+    try:
+        with pytest.raises(ExportBlocked) as e:
+            export_tc_excel("컨텐츠", [], [], out)  # 2차 — 막힘
+        msg = str(e.value)
+        assert str(out) in msg                       # 어느 파일인지
+        assert "Excel" in msg and "닫" in msg        # 다음 조치
+        assert "PermissionError" not in msg          # 예외 이름을 노출하지 않는다
+    finally:
+        os.chmod(out, stat.S_IWRITE)                 # 다른 테스트를 위해 되돌린다
+
+
+def test_export_blocked_is_an_oserror():
+    """호출자가 OSError 로도 잡을 수 있어야 한다."""
+    assert issubclass(ExportBlocked, OSError)
 
 
 def test_export_survives_control_characters_in_summary_sheet(make_tc, tmp_path):

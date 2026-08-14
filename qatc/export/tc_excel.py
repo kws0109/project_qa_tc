@@ -135,6 +135,14 @@ def _sheet_summary(
         ws.cell(row=r, column=2, value=clean_cell(v)).alignment = _WRAP
 
 
+class ExportBlocked(OSError):
+    """대상 파일에 쓸 수 없다 — 보통 Excel 이 그 파일을 열어 두고 있다.
+
+    메시지는 완성된 한국어 문장이라 호출자는 ``str(exc)`` 를 그대로 쓰면 된다.
+    CLI 와 앱이 같은 문장을 쓰게 하려고 CLI 가 아니라 여기서 만든다.
+    """
+
+
 def export_tc_excel(
     content: str,
     testcases: Sequence[TestCase],
@@ -155,5 +163,11 @@ def export_tc_excel(
     _sheet_testcases(wb, testcases, withdrawn)
     _sheet_skipped(wb, skipped, withdrawn)
     _sheet_summary(wb, content, testcases, skipped, withdrawn)
-    wb.save(path)
+    try:
+        wb.save(path)
+    except PermissionError as exc:
+        raise ExportBlocked(
+            f"파일에 쓸 수 없습니다 — {path}. "
+            f"Excel에서 이 파일을 닫고 다시 시도하세요."
+        ) from exc
     return path

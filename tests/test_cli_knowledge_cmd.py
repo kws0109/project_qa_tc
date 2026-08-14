@@ -610,3 +610,26 @@ def test_knowledge_default_game_appears_in_the_json_payload(cfg_env, capsys):
     assert main(["knowledge", "--json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["game"] == "starrail"
+
+
+def test_export_on_a_locked_file_tells_the_user_to_close_excel(cfg_env, capsys):
+    import os
+    import stat
+
+    assert main(["slot", "init", "잠김", "--game", "starrail"]) == 0
+    assert main(["slot", "set", "잠김", "core_action",
+                 "--status", "filled", "--value", "동작"]) == 0
+    capsys.readouterr()
+    assert main(["export", "잠김"]) == 0
+    out1 = capsys.readouterr().out
+    path = out1.split("✓")[1].split("(")[0].strip()
+
+    os.chmod(path, stat.S_IREAD)
+    try:
+        rc = main(["export", "잠김"])
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "Excel" in out and "닫" in out
+        assert "PermissionError" not in out
+    finally:
+        os.chmod(path, stat.S_IWRITE)

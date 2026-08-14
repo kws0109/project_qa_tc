@@ -539,7 +539,7 @@ def cmd_knowledge(args: argparse.Namespace, cfg: AppConfig) -> int:
 
 
 def cmd_export(args: argparse.Namespace, cfg: AppConfig) -> int:
-    from .export.tc_excel import export_tc_excel
+    from .export.tc_excel import ExportBlocked, export_tc_excel
 
     store = resolve_store(cfg, args.game, args.content)
     try:
@@ -560,7 +560,11 @@ def cmd_export(args: argparse.Namespace, cfg: AppConfig) -> int:
         else cfg.knowledge_path / f"{_safe_filename_part(game)}"
                                   f"_{_safe_filename_part(args.content)}_TC.xlsx"
     )
-    path = export_tc_excel(args.content, cases, skipped, out, withdrawn)
+    try:
+        path = export_tc_excel(args.content, cases, skipped, out, withdrawn)
+    except ExportBlocked as exc:
+        _p(f"오류: {exc}")
+        return 1
     _p(f"✓ {path}  (TC {len(cases)}건 · 미확인 {len(skipped)}건"
        + (f" · 근거 철회 {len(withdrawn)}계열" if withdrawn else "") + ")")
     return 0
