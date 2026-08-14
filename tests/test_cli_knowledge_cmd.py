@@ -5,8 +5,10 @@ from pathlib import Path
 import pytest
 
 from qatc.cli import build_parser, main
+from qatc.cli_knowledge import _safe_filename_part
 from qatc.config import AppConfig
 from qatc.console import display_width
+from qatc.knowledge.store import is_locked_error
 
 
 def test_knowledge_lists_contents_with_coverage(cfg_env, capsys):
@@ -177,21 +179,42 @@ def _raise(exc):
     return _fn
 
 
-def test_locked_db_says_another_qatc_process_is_running(cfg_env, capsys, monkeypatch):
+@pytest.mark.parametrize("message", [
+    "database is locked",
+    "database table is locked: slots",
+    "database is busy",
+], ids=["locked", "table-locked", "busy"])
+def test_locked_db_says_another_qatc_process_is_running(cfg_env, capsys, monkeypatch, message):
     """스펙 §7 이 요구하는 문구가 실제로 나와야 한다.
 
     `timeout=30.0` 만 있어 진짜 잠금은
     `오류: OperationalError: database is locked` 로 새어나왔다 — 인터뷰를
     진행하는 모델에게 "무엇을 하라"가 전혀 없는 메시지다.
+
+    `busy` 갈래는 미검증이었다 (M15). `is_locked_error` 에서 `or "busy" in msg`
+    를 지워도 초록이었는데, sqlite 는 `SQLITE_BUSY` 를 같은 `OperationalError`
+    로 던지므로 그 갈래가 빠지면 Minor 13 이 고친 "다음 조치 없는 오류" 가
+    그대로 되살아난다.
     """
     import qatc.cli_knowledge as ck
 
     monkeypatch.setattr(ck, "cmd_slot_status",
-                        _raise(sqlite3.OperationalError("database is locked")))
+                        _raise(sqlite3.OperationalError(message)))
     assert main(["slot", "status", "아무거나"]) == 1
     out = capsys.readouterr().out
     assert "다른 qatc 프로세스가 실행 중" in out
     assert "OperationalError" not in out
+
+
+@pytest.mark.parametrize("message, locked", [
+    ("database is locked", True),
+    ("database is busy", True),
+    ("no such table: slots", False),
+    ("attempt to write a readonly database", False),
+], ids=["locked", "busy", "no-such-table", "readonly"])
+def test_lock_classifier_separates_lock_from_other_db_errors(message, locked):
+    """분류기 자체를 직접 고정한다 — CLI 배선과 판정 규칙을 따로 봉인한다."""
+    assert is_locked_error(sqlite3.OperationalError(message)) is locked
 
 
 def test_non_lock_operational_error_still_shows_the_real_cause(cfg_env, capsys, monkeypatch):
@@ -225,3 +248,73 @@ def test_cfg_env_never_reads_the_real_config_file(cfg_env, tmp_path, monkeypatch
     cfg = AppConfig.load()
     assert Path(cfg.knowledge_root) == cfg_env
     assert Path(cfg.profiles_dir).is_relative_to(tmp_path)
+
+
+# --- 파일명 살균 규칙 (T2 · M3 · M16) ------------------------------------
+
+
+@pytest.mark.parametrize("ch", list('\\/:*?"<>|') + ["\x00", "\x07", "\x1f"],
+                         ids=["backslash", "slash", "colon", "star", "question",
+                              "quote", "lt", "gt", "pipe", "nul", "bel", "unit-sep"])
+def test_safe_filename_part_replaces_every_forbidden_character(ch):
+    """금지문자 11종 중 4종만 검증돼 있었다 (M3 생존).
+
+    `\\` `"` `<` `>` `|` 와 제어범위가 비어 있었다. 그중 `\\` 는 실제 피해가
+    가장 큰 문자다 — Windows 경로 구분자라 `mkdir(parents=True)` 가 rc=0 으로
+    엉뚱한 하위 폴더를 만들고 사용자는 xlsx 를 찾지 못한다.
+    """
+    got = _safe_filename_part(f"앞{ch}뒤")
+    assert got == "앞_뒤", ascii(got)
+
+
+def test_safe_filename_part_keeps_ordinary_names_untouched():
+    """반대쪽 경계 — 멀쩡한 이름을 건드리면 안 된다."""
+    for name in ("파티편성", "warp", "전투 보스", "v1.2 업데이트"):
+        assert _safe_filename_part(name) == name, name
+
+
+@pytest.mark.parametrize("name, want", [
+    ("보스전.", "보스전"),
+    ("보스전 ", "보스전"),
+    ("보스전. . ", "보스전"),
+    ("보스전...", "보스전"),
+], ids=["dot", "space", "mixed", "dots"])
+def test_safe_filename_part_strips_trailing_dots_and_spaces(name, want):
+    """끝의 마침표·공백은 Windows 가 파일명으로 만들 수 없다 (M16a 미검증).
+
+    지금은 살균 결과가 `{게임}_{컨텐츠}_TC.xlsx` 의 **가운데**에 들어가므로
+    당장 실패하지는 않지만, 이 함수의 계약은 "파일명 조각으로 안전하게 만든다"
+    이고 조각이 파일명 끝에 오는 호출자가 생기면 그때 조용히 깨진다.
+    """
+    assert _safe_filename_part(name) == want
+
+
+@pytest.mark.parametrize("name", ["", "   ", "...", ". . .", " . "],
+                         ids=["empty", "spaces", "dots", "dots-spaces", "space-dot-space"])
+def test_safe_filename_part_falls_back_to_a_name_when_nothing_is_left(name):
+    """전부 지워지면 빈 파일명이 된다 — `이름없음` 폴백이 미검증이었다 (M16b).
+
+    폴백이 없으면 `starrail__TC.xlsx` 처럼 조각이 사라지거나, 조각이 파일명
+    전체인 호출자에서는 이름 없는 경로가 만들어진다. (금지문자는 `_` 로
+    치환되므로 여기 오지 않는다 — `.rstrip('. ')` 로만 빌 수 있다.)
+    """
+    assert _safe_filename_part(name) == "이름없음"
+
+
+def test_export_default_filename_survives_a_backslash_in_the_content_name(cfg_env, capsys):
+    """역슬래시가 든 컨텐츠 이름으로도 하위 폴더가 생기면 안 된다 (종단 확인).
+
+    파라미터라이즈된 위 테스트는 `/ : ? *` 만 실제 `export` 로 확인했다.
+    역슬래시는 Windows 경로 구분자라 같은 결함 중 피해가 가장 크다.
+    """
+    name = "전투\\보스"
+    main(["slot", "init", name, "--game", "starrail"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    assert main(["export", name, "--game", "starrail"]) == 0
+    out = capsys.readouterr().out.strip()
+    path = Path(out.split("✓ ", 1)[1].split("  (", 1)[0])
+
+    assert path.exists()
+    assert path.parent == cfg_env
+    assert [d for d in cfg_env.iterdir() if d.is_dir()] == []

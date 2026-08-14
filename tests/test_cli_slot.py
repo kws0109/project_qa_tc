@@ -335,3 +335,96 @@ def test_unknown_na_empty_ignore_the_invisible_check(cfg_env, capsys, status, va
     main(["slot", "init", "파티편성", "--game", "starrail"])
     assert main(["slot", "set", "파티편성", "cost",
                  "--status", status, "--value", value]) == 0
+
+
+# --- slot status 가 실제로 보여주는 것 (T2 · M17 · M18) -------------------
+
+
+def _fill_three_ways(capsys):
+    """FILLED 하나 · UNKNOWN 하나 · NA 하나 — 나머지는 비어 있다."""
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    main(["slot", "set", "파티편성", "core_action", "--status", "filled",
+          "--value", "파티를 짜고 적용한다"])
+    main(["slot", "set", "파티편성", "cost", "--status", "unknown"])
+    main(["slot", "set", "파티편성", "failure", "--status", "na"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+
+def test_status_text_lists_the_open_slots_and_does_not_claim_completion(cfg_env, capsys):
+    """빈 슬롯이 남아 있는데 "모든 항목이 채워졌습니다" 라고 말하면 안 된다 (M18).
+
+    이 화면은 사람이 인터뷰 진척을 보는 곳이다. `if payload["open"]:` 를
+    뒤집어도 스위트가 전부 초록이었고(뮤테이션 M18 생존), 그 상태에서는 슬롯
+    7개가 빈 채로 완료가 선언된다 — 같은 출력이 `1/10 채움` 이라고 말하면서
+    동시에 다 됐다고 말하는 자기모순이다.
+    """
+    _fill_three_ways(capsys)
+
+    assert main(["slot", "status", "파티편성"]) == 0
+    out = capsys.readouterr().out
+
+    assert "[파티편성] starrail · 1/10 채움" in out   # 근거는 1개다 (닫힌 것은 3개)
+    assert "남은 항목:" in out
+    assert "모든 항목이 채워졌습니다" not in out
+    # 남은 항목은 키와 물음을 함께 보여준다 — 키만 있으면 무엇을 물을지 모른다
+    assert "entry" in out
+    assert "어디서 어떻게 들어가는가" in out
+    # 닫힌 슬롯은 남은 항목에 없다
+    remaining = out.split("남은 항목:", 1)[1]
+    for closed in ("core_action", "cost", "failure"):
+        assert closed not in remaining, closed
+
+
+def test_status_text_says_it_is_done_only_when_nothing_is_open(cfg_env, capsys):
+    """반대쪽 경계 — 정말 다 닫혔으면 완료와 다음 조치를 말해야 한다."""
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+    main(["slot", "status", "파티편성", "--json"])
+    keys = [s["key"] for s in json.loads(capsys.readouterr().out)["open"]]
+    for key in keys:
+        main(["slot", "set", "파티편성", key, "--status", "na"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    assert main(["slot", "status", "파티편성"]) == 0
+    out = capsys.readouterr().out
+    assert "모든 항목이 채워졌습니다" in out
+    assert "qatc tc plan" in out          # 다음 조치
+    assert "남은 항목:" not in out
+
+
+def test_status_json_planned_families_matches_what_can_be_built(cfg_env, capsys):
+    """`planned_families` 는 게이트가 계산한 결과여야 한다 (M17a).
+
+    이 배열이 상수여도 스위트가 초록이었다. 인터뷰를 진행하는 모델은 이걸 보고
+    "이제 TC를 만들 수 있다" 를 판단하므로, 틀리면 `tc add` 가 거부할 계열을
+    작성하느라 턴을 버린다.
+    """
+    _fill_three_ways(capsys)
+
+    main(["slot", "status", "파티편성", "--json"])
+    status = json.loads(capsys.readouterr().out)
+    main(["tc", "plan", "파티편성", "--json"])
+    plan = json.loads(capsys.readouterr().out)
+
+    assert status["planned_families"] == ["정상 경로"]
+    # 두 명령이 같은 답을 해야 한다 — 갈라지면 어느 쪽을 믿을지 알 수 없다
+    assert status["planned_families"] == [p["family"] for p in plan["planned"]]
+
+
+def test_status_json_skipped_status_distinguishes_empty_unknown_and_na(cfg_env, capsys):
+    """`skipped_families[].status` 를 `empty` 로 고정해도 초록이었다 (M17b).
+
+    그 상태에서는 사용자가 이미 `unknown`/`na` 로 **닫은** 슬롯이 "다시 물어라"
+    로 보고된다 — 4상태 설계가 막으려던 재질문 루프 그 자체다
+    ("이건 재화 안 써요" 라고 답했는데 도구가 계속 재화를 묻는 상황).
+    """
+    _fill_three_ways(capsys)
+
+    main(["slot", "status", "파티편성", "--json"])
+    skipped = {s["family"]: s for s in json.loads(capsys.readouterr().out)["skipped_families"]}
+
+    assert skipped["재화 부족"] == {"family": "재화 부족", "slot": "cost", "status": "unknown"}
+    assert skipped["실패 경로"] == {"family": "실패 경로", "slot": "failure", "status": "na"}
+    assert skipped["진입 경로"] == {"family": "진입 경로", "slot": "entry", "status": "empty"}
+    # 근거가 있는 계열은 제외 목록에 없다
+    assert "정상 경로" not in skipped

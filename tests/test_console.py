@@ -139,6 +139,38 @@ def test_pad_never_truncates():
     assert pad(long, 4) == long
 
 
+def test_pad_puts_the_text_first_when_left_aligned():
+    """좌정렬 계약이 미검증이었다 (M12).
+
+    기존 테스트는 `display_width(pad(...)) == 14` 만 봤다 — 그건 우정렬로
+    바뀌어도 참이다. 그런데 이 함수를 쓰는 표(`qatc knowledge` · `slot status` ·
+    `tc plan` · `tc list`)는 전부 **왼쪽에 이름, 오른쪽에 숫자** 형태라
+    기본값이 뒤집히면 모든 표가 어긋난다.
+    """
+    assert pad("ab", 6) == "ab    "
+    assert pad("컨텐츠", 10) == "컨텐츠    "     # 폭 6 → 공백 4
+    assert pad("", 3) == "   "
+    # 오른쪽 정렬은 명시했을 때만
+    assert pad("ab", 6, align="right") == "    ab"
+
+
+def test_display_width_counts_fullwidth_forms_as_two():
+    """전각(East Asian Width = F) 처리가 미검증이었다 (M13).
+
+    `("W", "F")` 를 `("W",)` 로 줄여도 스위트가 초록이었는데, 그러면 `ＴＣ`
+    같은 전각 문자가 폭 1로 세어져 표가 어긋난다 — 그게 바로 이 함수가 존재하는
+    이유다. W(한글·한자)와 F(전각 로마자·기호)를 둘 다 봉인한다.
+    """
+    assert display_width("ＴＣ") == 4          # U+FF34 U+FF23 — 전각 로마자 (F)
+    assert display_width("Ａ") == 2            # U+FF21 (F)
+    assert display_width("１２３") == 6        # U+FF11.. 전각 숫자 (F)
+    assert display_width("！") == 2            # U+FF01 전각 느낌표 (F)
+    assert display_width("TC") == 2            # 같은 글자의 반각은 1칸
+    assert display_width("한") == 2            # W 도 그대로 2칸
+    # A(Ambiguous)는 폰트에 따라 달라지므로 1로 둔다 — 이 선택도 함께 고정한다
+    assert display_width("\u00b1") == 1       # ±
+
+
 def test_skipped_profile_notice_survives_the_console_codepage(tmp_path, monkeypatch):
     """`load_profiles` 의 "건너뜁니다" 안내가 콘솔을 죽이면 안 된다 (Minor 1).
 

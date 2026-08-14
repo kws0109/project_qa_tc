@@ -587,3 +587,95 @@ def test_export_xlsx_marks_withdrawn_evidence(stdin_text, ready, monkeypatch, ca
     rows = [[c.value for c in r] for r in skipped.iter_rows(min_row=2)]
     withdrawn_row = next(r for r in rows if "core_action" in r)
     assert any(v and "근거 철회됨" in str(v) for v in withdrawn_row)
+
+
+# --- tc plan 텍스트 모드 (T2 · M9) ---------------------------------------
+
+
+def test_plan_text_lists_each_planned_family_with_kind_and_priority(ready, capsys):
+    """`tc plan` 의 텍스트 모드가 통째로 미검증이었다 (M9a) — 모든 테스트가 `--json`.
+
+    사람이 `qatc tc plan` 을 그냥 치면 보는 것이 이 화면이다. 계획 행을 아예
+    출력하지 않아도 스위트가 초록이었다.
+    """
+    main(["slot", "set", "파티편성", "constraints", "--status", "filled",
+          "--value", "최대 4명"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    assert main(["tc", "plan", "파티편성"]) == 0
+    out = capsys.readouterr().out
+
+    assert "[파티편성] 생성 대상 계열 2개" in out
+    planned_block = out.split("제외됨:", 1)[0]
+    happy = next(ln for ln in planned_block.splitlines() if "정상 경로" in ln)
+    assert "core_action" in happy          # 어느 슬롯이 근거인지
+    assert "정상 / High" in happy          # TCKind / 기본 우선순위
+    boundary = next(ln for ln in planned_block.splitlines() if "경계값" in ln)
+    assert "constraints" in boundary
+    assert "경계값 / Medium" in boundary
+
+
+def test_plan_text_lists_skipped_families_with_their_reason(ready, capsys):
+    """제외 블록도 미검증이었다 (M9b).
+
+    이 블록이 없으면 사용자는 "왜 이 계열이 안 만들어지는가" 를 알 수 없고,
+    무엇을 더 물어야 하는지도 알 수 없다 — 게이트의 판단이 보이지 않게 된다.
+    """
+    main(["slot", "set", "파티편성", "cost", "--status", "unknown"])
+    main(["slot", "set", "파티편성", "failure", "--status", "na"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    assert main(["tc", "plan", "파티편성"]) == 0
+    out = capsys.readouterr().out
+    assert "제외됨:" in out
+    skipped_block = out.split("제외됨:", 1)[1]
+
+    rows = {}
+    for line in skipped_block.splitlines():
+        for family in ("재화 부족", "실패 경로", "진입 경로"):
+            if family in line:
+                rows[family] = line
+    assert set(rows) == {"재화 부족", "실패 경로", "진입 경로"}
+
+    # 상태 세 가지가 서로 다른 사유로 보여야 한다 (4상태 설계의 요점)
+    assert "cost" in rows["재화 부족"] and "사용자가 모른다고 답함" in rows["재화 부족"]
+    assert "failure" in rows["실패 경로"] and "해당 없음으로 표시됨" in rows["실패 경로"]
+    assert "entry" in rows["진입 경로"] and "슬롯이 비어 있음" in rows["진입 경로"]
+
+    # 근거가 있는 계열은 제외 블록에 없다
+    assert "정상 경로" not in skipped_block
+
+
+# --- tc add --json <파일 경로> (T2 · M11) --------------------------------
+
+
+def test_add_reads_the_payload_from_a_file_path(ready, tmp_path, capsys):
+    """`--json <파일 경로>` 갈래가 통째로 미검증이었다 (M11a).
+
+    SKILL.md 는 히어독(`--json -`)을 쓰지만 도움말은 "JSON 파일 경로 또는 '-'"
+    라고 약속한다. 표준입력만 읽도록 되돌려도 스위트가 초록이었다.
+    """
+    path = tmp_path / "tc.json"
+    path.write_text(_payload("파일에서 읽은 TC"), encoding="utf-8")
+
+    assert main(["tc", "add", "파티편성", "--family", "정상 경로",
+                 "--origin", "interview", "--json", str(path)]) == 0
+    assert [t.title for t in _stored(ready)] == ["파일에서 읽은 TC"]
+
+
+def test_add_on_missing_file_says_it_could_not_read_the_json(ready, tmp_path, capsys):
+    """없는 파일을 주면 날 `FileNotFoundError` 대신 우리 메시지가 나와야 한다 (M11b).
+
+    `except (OSError, json.JSONDecodeError)` 에서 `OSError` 를 빼도 초록이었다 —
+    그러면 `cli.py` 의 범용 핸들러가 `오류: FileNotFoundError: [Errno 2] ...` 를
+    앞줄 공백과 함께 뱉는다. 인터뷰를 진행하는 모델에게 파이썬 예외 이름은
+    다음에 무엇을 할지 알려주지 않는다.
+    """
+    missing = tmp_path / "없는파일.json"
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "interview", "--json", str(missing)])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "JSON을 읽을 수 없습니다" in out
+    assert "FileNotFoundError" not in out
+    assert _stored(ready) == []
