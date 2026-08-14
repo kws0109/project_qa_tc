@@ -158,19 +158,31 @@ def test_export_blocked_file_reports_the_korean_message_not_a_class_name(app, mo
 def test_the_backend_never_writes_to_the_knowledge_db(app):
     """앱이 게이트를 우회할 수 없다는 것이 이 설계의 중심 성질이다.
 
-    `qatc/app/` 안에서 쓰기 메서드를 부르면 채팅→CLI→게이트 경로 밖에
-    두 번째 쓰기 경로가 생긴다. 선행 브랜치에서 이 불변식이 세 번 다시
-    뚫렸고, 매번 "닫았다"고 판단한 다음 라운드에서 열렸다.
+    `qatc/app/` 안에서, 그리고 `qatc/cli.py`(`qatc app`의 진입점) 안에서
+    쓰기 메서드를 부르면 채팅→CLI→게이트 경로 밖에 두 번째 쓰기 경로가
+    생긴다. 선행 브랜치에서 이 불변식이 세 번 다시 뚫렸고, 매번 "닫았다"고
+    판단한 다음 라운드에서 열렸다.
+
+    `qatc/cli.py`를 넣는 이유: Task 5가 `cmd_app`·`_find_open_port`를 그
+    파일에 추가하면서 앱의 진입점 코드가 옛 `qatc/app/**/*.py` 글롭 밖으로
+    나갔다 — 이 가드가 막으려던 바로 그 종류의 우회를, 이 가드를 넓히지
+    않은 채로는 Task 5 자신이 놓칠 뻔했다(리뷰에서 실측: `cmd_app` 맨 위에
+    `KnowledgeStore(...).init_content(...)`를 심어도 옛 버전은 계속 통과했다).
+
+    `qatc/cli_knowledge.py`는 **일부러** 넣지 않는다 — `slot`·`tc` 같은
+    인터뷰 명령이 정당하게 쓰기를 하는 유일한 경로라서, 거기까지 넣으면
+    이 테스트가 항상 실패한다.
     """
     import pathlib
 
-    src = "\n".join(
-        p.read_text(encoding="utf-8")
-        for p in pathlib.Path("qatc/app").rglob("*.py")
-    )
-    for writer in ("add_testcase", "set_slot", "init_content",
-                   "replace_generated", "add_slot", "update_testcase_row"):
-        assert writer not in src, f"앱이 쓰기 메서드를 부른다: {writer}"
+    write_methods = ("add_testcase", "set_slot", "init_content",
+                      "replace_generated", "add_slot", "update_testcase_row")
+    guarded_files = [*pathlib.Path("qatc/app").rglob("*.py"), pathlib.Path("qatc/cli.py")]
+
+    for path in guarded_files:
+        src = path.read_text(encoding="utf-8")
+        for writer in write_methods:
+            assert writer not in src, f"{path} 가 쓰기 메서드를 부른다: {writer}"
 
 
 def test_index_has_the_three_panes(app):
