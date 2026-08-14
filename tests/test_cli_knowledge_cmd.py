@@ -570,3 +570,43 @@ def test_knowledge_uses_the_default_game(cfg_env, capsys):
     capsys.readouterr()
     assert main(["knowledge"]) == 0
     assert "파티편성" in capsys.readouterr().out
+
+
+def test_knowledge_default_game_names_itself_in_the_text_header(cfg_env, capsys):
+    """기본 게임 경로에서도 텍스트 헤더가 **해석된** 게임을 말해야 한다.
+
+    `cmd_knowledge` 의 헤더 자리(`f"[{game}] ..."`)를 `args.game` 으로 되돌려도
+    스위트가 초록일 수 있다 — `--game` 이 없으면 `args.game` 은 `None` 이라
+    헤더는 `[None] 컨텐츠 1개` 를 찍지만, DB는 여전히 (resolve_game 이 고른)
+    starrail.db 를 정확히 열어 컨텐츠 행은 그대로 옳게 나온다. "컨텐츠 이름이
+    출력에 있는가" 만 보는 검사로는 그 절반만 고쳐진 상태 — 한 게임을
+    보고하면서 다른 게임을 여는 것 — 를 잡을 수 없다. 그래서 헤더 줄 자체를
+    등호로 본다 (아래 표에도 게임 이름이 나올 수 있으므로 전체 출력이 아니라
+    첫 줄만 본다).
+    """
+    assert main(["config", "--game", "starrail"]) == 0
+    capsys.readouterr()
+    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    capsys.readouterr()
+
+    assert main(["knowledge"]) == 0
+    header = capsys.readouterr().out.splitlines()[0]
+    assert header == "[starrail] 컨텐츠 1개"
+
+
+def test_knowledge_default_game_appears_in_the_json_payload(cfg_env, capsys):
+    """`--json` 의 `game` 필드도 헤더와 같은 이유로 해석된 값이어야 한다.
+
+    `args.game` 으로 되돌리면 이 필드는 `null` 이 된다. 페이로드 전체에서
+    "starrail" 을 부분문자열로 찾으면 안 된다 — 컨텐츠 행 이름에 게임 이름이
+    우연히 들어갈 수 있어 그 검사는 `game` 키가 `null` 이어도 통과한다.
+    그래서 JSON 을 파싱해 `game` 키의 값만 본다.
+    """
+    assert main(["config", "--game", "starrail"]) == 0
+    capsys.readouterr()
+    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    capsys.readouterr()
+
+    assert main(["knowledge", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["game"] == "starrail"
