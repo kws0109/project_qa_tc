@@ -62,7 +62,12 @@ def test_save_on_a_locked_config_says_what_to_do(tmp_path, monkeypatch):
             cfg.save()
         msg = str(e.value)
         assert str(target) in msg                 # 어느 파일인지
-        assert "닫" in msg or "권한" in msg        # 다음 조치
+        # 다음 조치는 **둘 다** 말해야 한다. 원래 `"닫" in msg or "권한" in msg`
+        # 였는데, 실제 메시지에 두 낱말이 **모두** 들어 있으므로 그 논리합은
+        # 안내의 절반을 지워도 통과한다 — 한쪽만 남기면 사용자는 원인이 편집기인지
+        # 권한인지 모른 채 한쪽만 시도한다. 둘로 나눠 각각 못박는다.
+        assert "닫" in msg                        # 열고 있는 프로그램을 닫아라
+        assert "권한" in msg                      # 파일 권한을 확인하라
         assert "PermissionError" not in msg       # 예외 이름을 노출하지 않는다
     finally:
         os.chmod(target, stat.S_IWRITE)

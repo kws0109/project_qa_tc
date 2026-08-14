@@ -873,3 +873,46 @@ def test_the_stored_default_is_validated_on_knowledge_too(cfg_env, capsys, tmp_p
 
     assert main(["knowledge"]) == 1
     assert "등록된 게임이 아닙니다" in capsys.readouterr().out
+
+
+def test_config_game_on_a_locked_file_is_a_korean_sentence_not_an_exception(
+        cfg_env, capsys):
+    """CLI 레벨 — 잠긴 설정 파일에 `config --game` 을 하면 사람 말이 나온다.
+
+    이 경로는 **이 계획이 만들었다.** `qatc config` 는 확인 전용이었는데
+    `--game` 이 붙으면서 쓰기 명령이 됐다. 편집기로 열어두거나 클라우드
+    동기화가 잠그면 실제로 난다.
+
+    짝이 되는 단위 테스트(`tests/test_config.py` 의
+    `test_save_on_a_locked_config_says_what_to_do`)는 `AppConfig.save()` 를 직접
+    감싸므로 **CLI 가 그 `SystemExit` 를 어떻게 보여주는지**는 보지 못한다.
+    실측: `SystemExit` 를
+    다른 예외 타입으로 바꾸면 단위 테스트 하나만 실패하고, CLI 출력은
+    `오류: RuntimeError: 설정 파일에 쓸 수 없습니다 — …` 가 되어 이 계획이
+    없애기로 한 형태로 되돌아간다. 잠긴 xlsx 는 같은 이유로 CLI 레벨 쌍둥이를
+    이미 갖고 있는데 이쪽만 없었다.
+    """
+    import os
+    import stat
+
+    from qatc.config import AppConfig
+
+    target = AppConfig.config_file()
+    assert target.exists()                     # 픽스처가 이미 만들어 둔다
+    os.chmod(target, stat.S_IREAD)
+    try:
+        rc = main(["config", "--game", "genshin"])
+        out = capsys.readouterr().out
+        assert rc == 1
+        # 실패한 명령은 원인이 무엇이든 오류 줄을 정확히 하나만 찍는다
+        # (잠긴 xlsx 테스트와 같은 구조적 단언 — 예외 이름을 나열해 부재를
+        # 확인하는 방식은 목록에 없는 예외가 새어도 잡지 못한다).
+        assert out.count("오류:") == 1
+        assert str(target) in out              # 어느 파일인지
+        assert "닫" in out and "권한" in out     # 다음 조치 두 갈래
+        # 파이썬 예외 이름이 그대로 나오면 안 된다. 클래스 이름은 관용적으로
+        # `…Error` 로 끝나므로 접미사로 통째로 막는다 — 이름을 하나씩 나열하면
+        # 목록에 없는 예외가 새어 나가도 통과한다.
+        assert "Error" not in out
+    finally:
+        os.chmod(target, stat.S_IWRITE)
