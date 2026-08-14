@@ -25,6 +25,7 @@ def user_config_dir() -> Path:
 class AppConfig:
     knowledge_root: str = ""
     profiles_dir: str = ""
+    default_game: str = ""      # 빈 문자열이면 "설정 안 됨"
 
     def __post_init__(self) -> None:
         if not self.knowledge_root:
@@ -82,10 +83,15 @@ class AppConfig:
         return cls(
             knowledge_root=raw.get("knowledge_root", ""),
             profiles_dir=raw.get("profiles_dir", ""),
+            default_game=raw.get("default_game", ""),
         )
 
     def save(self) -> Path:
         f = self.config_file()
-        d = {"knowledge_root": self.knowledge_root, "profiles_dir": self.profiles_dir}
+        d = {
+            "knowledge_root": self.knowledge_root,
+            "profiles_dir": self.profiles_dir,
+            "default_game": self.default_game,
+        }
         f.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
         return f

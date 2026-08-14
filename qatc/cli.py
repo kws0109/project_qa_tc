@@ -33,6 +33,16 @@ def cmd_config(args: argparse.Namespace, cfg: AppConfig) -> int:
     `cfg.knowledge_path` 프로퍼티도 `mkdir` 을 하므로 출력용으로는 쓰지 않는다 —
     확인만 했는데 오타 난 경로에 빈 폴더가 생기면 그것도 조용한 쓰기다.
     """
+    game = getattr(args, "game", None)
+    if game:
+        from .games import validate_game
+
+        validate_game(cfg, game)        # 잘못된 이름이면 여기서 SystemExit
+        cfg.default_game = game
+        saved = cfg.save()
+        _p(f"✓ 기본 게임 = {game}  ({saved})")
+        return 0
+
     path = AppConfig.config_file()
     if path.exists():
         _p(f"설정 파일 : {path}")
@@ -81,6 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     _register_knowledge(sub)
 
     cf = sub.add_parser("config", help="설정 확인")
+    cf.add_argument("--game", "-g", help="기본 게임을 설정한다 (이후 --game 생략 가능)")
     cf.set_defaults(func=cmd_config)
 
     return parser

@@ -496,3 +496,31 @@ def test_broken_config_stops_every_command_not_just_config(real_config, capsys):
     out = capsys.readouterr().out
     assert str(real_config) in out
     assert "읽을 수 없습니다" in out
+
+
+def test_config_game_sets_the_default(cfg_env, capsys):
+    assert main(["config", "--game", "starrail"]) == 0
+    capsys.readouterr()
+    from qatc.config import AppConfig
+    assert AppConfig.load().default_game == "starrail"
+
+
+def test_config_game_rejects_an_unregistered_name(cfg_env, capsys):
+    rc = main(["config", "--game", "starrial"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "starrial" in out
+    assert "starrail" in out          # 쓸 수 있는 이름을 알려준다
+    from qatc.config import AppConfig
+    assert AppConfig.load().default_game == ""   # 잘못된 값이 저장되지 않았다
+
+
+def test_plain_config_still_does_not_write(cfg_env, capsys):
+    """인자 없는 config 는 확인만 한다 — 기존 계약."""
+    from qatc.config import AppConfig
+    assert main(["config", "--game", "starrail"]) == 0
+    capsys.readouterr()
+    before = AppConfig.config_file().read_bytes()
+    assert main(["config"]) == 0
+    capsys.readouterr()
+    assert AppConfig.config_file().read_bytes() == before
