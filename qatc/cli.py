@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import sys
+from pathlib import Path
 
 from .config import AppConfig
 from .console import _p
@@ -25,9 +26,25 @@ from .knowledge.store import DB_LOCKED_HINT, is_locked_error
 
 
 def cmd_config(args: argparse.Namespace, cfg: AppConfig) -> int:
-    path = cfg.save()
-    _p(f"설정 파일 : {path}")
-    _p(f"지식 폴더 : {cfg.knowledge_path}")
+    """설정과 프로파일을 **보여준다.** 첫 실행의 파일 생성 말고는 쓰지 않는다.
+
+    예전에는 첫 문장이 `cfg.save()` 였다. README 는 이 파일을 손으로 고치라고
+    안내하면서 위치를 이 명령으로 찾으라고 하는데, 찾는 행위가 파일을 덮어썼다.
+    `cfg.knowledge_path` 프로퍼티도 `mkdir` 을 하므로 출력용으로는 쓰지 않는다 —
+    확인만 했는데 오타 난 경로에 빈 폴더가 생기면 그것도 조용한 쓰기다.
+    """
+    path = AppConfig.config_file()
+    if path.exists():
+        _p(f"설정 파일 : {path}")
+    else:
+        # 첫 실행 — 손으로 고칠 파일이 있어야 README 의 안내가 성립한다.
+        # 만들되 만들었다고 말한다. 말하지 않으면 화면의 경로가 파일 내용인지
+        # 기본값인지 구분되지 않는다.
+        cfg.save()
+        _p(f"설정 파일 : {path}  (없어서 기본값으로 새로 만들었습니다)")
+
+    kroot = Path(cfg.knowledge_root)
+    _p(f"지식 폴더 : {kroot}" + ("" if kroot.exists() else "  (아직 없습니다 — slot init 때 만들어집니다)"))
     _p(f"프로파일  : {cfg.profiles_path}")
 
     from .profiles import load_profiles
@@ -71,8 +88,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(sys.argv[1:] if argv is None else argv)
-    cfg = AppConfig.load()
     try:
+        # `AppConfig.load()` 도 try 안이다 — 깨진 설정 파일은 `SystemExit` 문자열로
+        # 올라오고, 아래 핸들러가 그것을 `오류: …` + rc=1 로 바꾼다. 예전처럼
+        # 밖에서 부르면 그 예외가 스택트레이스로 새어나간다.
+        cfg = AppConfig.load()
         return args.func(args, cfg)
     except KeyboardInterrupt:
         _p("\n중단되었습니다.")

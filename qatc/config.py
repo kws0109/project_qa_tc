@@ -50,14 +50,35 @@ class AppConfig:
 
     @classmethod
     def load(cls) -> AppConfig:
+        """설정 파일을 읽는다. 파일이 없으면 기본값 (첫 실행).
+
+        :raises SystemExit: 파일이 있는데 읽을 수 없으면. `main()` 이 문자열
+            코드를 `오류: …` + rc=1 로 바꾼다 (`resolve_store` 와 같은 관용구).
+
+        예전에는 JSON 오류를 삼키고 **말없이 기본값으로 돌아갔다.** 그러면
+        `knowledge_root` 가 사용자 폴더에서 저장소 기본값으로 바뀌고, 다음
+        명령은 다른 폴더를 보며 "컨텐츠가 없습니다" 라고 답한다 — 사용자는
+        쌓아둔 지식이 사라진 줄 안다. 게다가 `cmd_config` 가 첫 문장에서
+        `save()` 를 부르고 있어서, 그 기본값이 사용자의 파일을 **덮어썼다**
+        (재검증자가 실제로 당했다). 깨진 설정은 조용히 넘길 값이 아니라
+        사용자가 고쳐야 할 것이므로, 어느 파일인지와 다음 조치를 말하고 멈춘다.
+        """
         f = cls.config_file()
         if not f.exists():
             return cls()
         try:
             raw = json.loads(f.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            # 설정이 깨졌다고 앱이 못 뜨면 안 된다. 기본값으로 계속한다.
-            return cls()
+        except (json.JSONDecodeError, OSError) as exc:
+            raise SystemExit(
+                f"설정 파일을 읽을 수 없습니다 — {f} ({exc}). "
+                f"파일을 고치거나, 기본값으로 다시 시작하려면 지우면 됩니다."
+            ) from exc
+        if not isinstance(raw, dict):
+            raise SystemExit(
+                f"설정 파일을 읽을 수 없습니다 — {f} "
+                f"(최상위가 객체가 아닙니다: {type(raw).__name__}). "
+                f"파일을 고치거나, 기본값으로 다시 시작하려면 지우면 됩니다."
+            )
         return cls(
             knowledge_root=raw.get("knowledge_root", ""),
             profiles_dir=raw.get("profiles_dir", ""),

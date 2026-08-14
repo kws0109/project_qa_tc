@@ -318,3 +318,115 @@ def test_export_default_filename_survives_a_backslash_in_the_content_name(cfg_en
     assert path.exists()
     assert path.parent == cfg_env
     assert [d for d in cfg_env.iterdir() if d.is_dir()] == []
+
+
+# --- qatc config 는 "확인" 이다 (C2) -------------------------------------
+
+
+@pytest.fixture()
+def real_config(tmp_path, monkeypatch):
+    """진짜 `AppConfig.load()` 가 임시 폴더의 설정 파일만 보게 만든다.
+
+    `cfg_env` 는 `load()` 자체를 갈아끼우므로 설정 **파일** 을 검사할 수 없다.
+    여기서는 `APPDATA` 와 `project_root()` 를 임시 폴더로 돌려, 실제 파일
+    입출력을 그대로 태우되 저장소와 개발자 기계에는 손대지 않는다.
+    """
+    import qatc.config as config
+
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setattr(config, "project_root", lambda: tmp_path / "proj")
+    return tmp_path / "appdata" / "qatc" / "config.json"
+
+
+def _write_config(path: Path, knowledge_root: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"knowledge_root": str(knowledge_root), "profiles_dir": ""},
+                   ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def test_config_does_not_rewrite_an_existing_config_file(real_config, tmp_path, capsys):
+    """`config` 는 README·`--help` 가 약속한 대로 **확인**이어야 한다 (C2).
+
+    예전 `cmd_config` 의 첫 문장이 `cfg.save()` 였다. README 는 이 파일을 손으로
+    고치라고 안내하면서 위치를 이 명령으로 찾으라고 하는데, 찾는 행위가 파일을
+    덮어썼다.
+    """
+    _write_config(real_config, tmp_path / "내지식")
+    before = real_config.read_bytes()
+
+    assert main(["config"]) == 0
+    assert real_config.read_bytes() == before, "확인 명령이 설정 파일을 고쳤다"
+
+    out = capsys.readouterr().out
+    assert str(real_config) in out
+    assert str(tmp_path / "내지식") in out      # 파일에 적힌 값이 그대로 보인다
+
+
+def test_config_does_not_create_the_knowledge_folder(real_config, tmp_path, capsys):
+    """확인만 했는데 폴더가 생기면 그것도 쓰기다.
+
+    `cfg.knowledge_path` 프로퍼티는 `mkdir(parents=True)` 를 한다. 출력용으로
+    그걸 부르면 오타 난 경로에 빈 폴더가 조용히 만들어진다.
+    """
+    kroot = tmp_path / "아직 없는 폴더"
+    _write_config(real_config, kroot)
+
+    assert main(["config"]) == 0
+    assert not kroot.exists()
+    out = capsys.readouterr().out
+    assert str(kroot) in out
+    assert "아직 없습니다" in out               # 없다는 사실을 말해준다
+
+
+def test_config_creates_the_default_file_on_first_run_and_says_so(real_config, capsys):
+    """첫 실행에는 설정 파일이 없다 — 만들어 주되 **만들었다고 말해야** 한다.
+
+    말하지 않으면 사용자는 화면의 경로가 자기 파일 내용인지 기본값인지 알 수 없다.
+    """
+    assert not real_config.exists()
+
+    assert main(["config"]) == 0
+    assert real_config.exists()                # 첫 실행 생성 경로는 남긴다
+    out = capsys.readouterr().out
+    assert "새로 만들었습니다" in out
+    assert str(real_config) in out
+
+
+def test_broken_config_is_a_visible_error_and_is_not_overwritten(real_config, capsys):
+    """깨진 설정을 조용히 기본값으로 되돌리면 안 된다 (C2).
+
+    재검증자가 실제로 당한 경로다 — 스크래치 설정의 이스케이프가 깨져 있었고,
+    `qatc config` 한 번에 설정이 기본값으로 덮어써졌으며 출력은 그게 파일
+    내용인지 기본값인지 구분해 주지 않았다. 사용자의 `knowledge_root` 가
+    말없이 저장소 기본값으로 바뀌면 쌓아둔 지식 DB가 사라진 것처럼 보인다.
+    """
+    real_config.parent.mkdir(parents=True, exist_ok=True)
+    # README 가 안내하는 손편집에서 가장 흔한 실수 — Windows 경로의 역슬래시
+    broken = '{"knowledge_root": "C:' + chr(92) + '내지식"}'
+    real_config.write_text(broken, encoding="utf-8")
+
+    assert main(["config"]) == 1
+    out = capsys.readouterr().out
+    assert str(real_config) in out              # 어느 파일인지
+    assert "읽을 수 없습니다" in out
+    assert "지우면" in out                       # 다음 조치
+    assert real_config.read_text(encoding="utf-8") == broken, "깨진 설정이 덮어써졌다"
+
+
+def test_broken_config_stops_every_command_not_just_config(real_config, capsys):
+    """설정이 깨진 채로 다른 명령이 진행되면 **다른 지식 폴더**를 보게 된다.
+
+    조용한 기본값 복귀는 `config` 만의 문제가 아니다 — `slot status` 가 엉뚱한
+    폴더를 보고 "컨텐츠가 없습니다" 라고 답하면, 사용자는 자기 인터뷰가 사라진
+    줄 안다.
+    """
+    real_config.parent.mkdir(parents=True, exist_ok=True)
+    real_config.write_text("{깨진 JSON", encoding="utf-8")
+
+    assert main(["slot", "status", "파티편성"]) == 1
+    out = capsys.readouterr().out
+    assert str(real_config) in out
+    assert "읽을 수 없습니다" in out
