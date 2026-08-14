@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QATC</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="app">
+  <aside id="tree">
+    <h1>QATC</h1>
+    <div id="tree-body"><p class="empty">불러오는 중…</p></div>
+  </aside>
+
+  <main id="chat">
+    <div id="chat-header">
+      <span id="chat-content-label">컨텐츠를 선택하지 않음</span>
+      <div id="chat-header-right">
+        <span id="claude-status" class="badge"></span>
+        <button id="chat-new-btn" type="button">새 대화</button>
+      </div>
+    </div>
+    <div id="chat-log" aria-live="polite"></div>
+    <form id="chat-form">
+      <textarea id="chat-input" rows="2" placeholder="메시지를 입력하세요 (Shift+Enter 로 줄바꿈)"></textarea>
+      <button id="chat-send" type="submit">보내기</button>
+    </form>
+  </main>
+
+  <section id="review">
+    <div id="review-toolbar">
+      <button id="export-btn" type="button" disabled>엑셀로 열기</button>
+      <div id="export-status"></div>
+    </div>
+    <div id="review-empty" class="empty">컨텐츠를 먼저 선택하세요.</div>
+    <div id="review-body" hidden></div>
+  </section>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

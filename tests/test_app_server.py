@@ -167,3 +167,22 @@ def test_the_backend_never_writes_to_the_knowledge_db(app):
     for writer in ("add_testcase", "set_slot", "init_content",
                    "replace_generated", "add_slot", "update_testcase_row"):
         assert writer not in src, f"앱이 쓰기 메서드를 부른다: {writer}"
+
+
+def test_index_has_the_three_panes(app):
+    html = app.test_client().get("/").get_data(as_text=True)
+    for pane in ("tree", "chat", "review"):
+        assert f'id="{pane}"' in html, f"{pane} 패널이 없습니다"
+
+
+def test_static_assets_are_served(app):
+    c = app.test_client()
+    for path in ("/static/app.css", "/static/app.js"):
+        assert c.get(path).status_code == 200, path
+
+
+def test_the_page_loads_nothing_from_the_network(app):
+    """로컬 앱이다. 외부 CDN 을 물면 오프라인에서 죽는다."""
+    html = app.test_client().get("/").get_data(as_text=True)
+    assert "http://" not in html
+    assert "https://" not in html

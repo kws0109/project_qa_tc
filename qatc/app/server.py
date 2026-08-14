@@ -25,17 +25,6 @@ from ..knowledge.store import KnowledgeStore
 from .chat import stream_turn
 from .views import ContentNotFound, content_detail, tree
 
-#: Task 4 가 진짜 화면으로 바꾼다. 지금은 서버·라우트만 검증하면 되므로
-#: 최소한의 자리표시자만 둔다.
-_INDEX_HTML = """<!doctype html>
-<html lang="ko">
-<head><meta charset="utf-8"><title>QATC</title></head>
-<body>
-<p>QATC 앱 화면은 다음 태스크에서 채워집니다.</p>
-</body>
-</html>
-"""
-
 
 def create_app(cfg: AppConfig) -> Flask:
     """`cfg` 가 가리키는 지식 루트를 읽는 Flask 앱을 만든다."""
@@ -51,7 +40,9 @@ def create_app(cfg: AppConfig) -> Flask:
 
     @app.get("/")
     def index():
-        return Response(_INDEX_HTML, mimetype="text/html")
+        # 3분할 화면은 정적 파일이다 (Task 4) — 여기서는 그 파일을 그대로
+        # 돌려줄 뿐, 화면이 뭘 하는지는 이 모듈이 몰라도 된다.
+        return app.send_static_file("index.html")
 
     @app.get("/api/tree")
     def api_tree():

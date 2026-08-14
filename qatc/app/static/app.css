@@ -1,0 +1,389 @@
+/* QATC 3분할 화면 스타일.
+
+   오프라인 전용 도구다 — 외부 폰트나 CDN을 절대 물지 않는다. 폰트는 운영체제에
+   이미 있는 한글 시스템 폰트(맑은 고딕)로만 그린다. 사용자가 이 화면의 한국어
+   텍스트를 오래 읽으므로 장식보다 가독성 — 줄 길이, 위계, 여백 — 을 우선한다.
+*/
+
+:root {
+  color-scheme: light;
+  --font: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+  --bg: #f4f5f7;
+  --panel-bg: #ffffff;
+  --border: #d9dce1;
+  --text: #1f2328;
+  --text-muted: #6b7280;
+  --accent: #2f6fed;
+  --accent-soft: #e8f0fe;
+  --ok: #1a7f37;
+  --ok-bg: #dff5e1;
+  --warn: #b45309;
+  --warn-bg: #fdf1dc;
+  --danger: #c0392b;
+  --danger-bg: #fdecea;
+  --edited: #6d28d9;
+  --edited-bg: #f1e9fd;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font);
+  font-size: 14.5px;
+  line-height: 1.65;
+  color: var(--text);
+  background: var(--bg);
+}
+
+button, textarea, input {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(460px, 1fr) minmax(320px, 380px);
+  height: 100vh;
+}
+
+#tree, #chat, #review {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--panel-bg);
+}
+
+#tree {
+  border-right: 1px solid var(--border);
+  padding: 16px;
+}
+
+#review {
+  border-left: 1px solid var(--border);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+#chat {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow-y: hidden;
+}
+
+/* ---------- 왼쪽: 트리 ---------- */
+
+#tree h1 {
+  font-size: 1rem;
+  margin: 0 0 12px;
+  letter-spacing: 0.04em;
+}
+
+.muted { color: var(--text-muted); font-size: 0.85rem; }
+
+.empty {
+  color: var(--text-muted);
+  padding: 12px 4px;
+}
+
+.game { margin-top: 18px; }
+.game:first-child { margin-top: 0; }
+
+.game-name {
+  font-weight: 700;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.content {
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+  margin-bottom: 2px;
+}
+
+.content:hover { background: var(--accent-soft); }
+
+.content.selected {
+  background: var(--accent-soft);
+  outline: 1px solid var(--accent);
+}
+
+.content-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.content-name { font-weight: 600; }
+
+.content-progress {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.families {
+  margin: 8px 0 4px 8px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
+.family { margin: 6px 0; }
+
+.family-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.family-name { font-weight: 500; }
+.family-count { color: var(--text-muted); }
+
+.family-status {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.family-blocked .family-name,
+.family-blocked .family-count { color: var(--text-muted); }
+
+.family-withdrawn .family-name,
+.family-withdrawn .family-status { color: var(--warn); font-weight: 600; }
+
+.tc {
+  font-size: 0.85rem;
+  padding: 4px 6px;
+  margin: 2px 0 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tc:hover { background: var(--accent-soft); }
+.tc.selected { background: var(--accent); color: #fff; }
+.tc-withdrawn { color: var(--warn); }
+.tc.selected.tc-withdrawn { color: #fff; }
+
+/* ---------- 가운데: 채팅 ---------- */
+
+#chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+#chat-content-label { font-weight: 600; }
+
+#chat-header-right { display: flex; align-items: center; gap: 10px; }
+
+.badge {
+  font-size: 0.78rem;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--border);
+  color: var(--text-muted);
+}
+
+.status-ok { background: var(--ok-bg); color: var(--ok); }
+.status-missing { background: var(--danger-bg); color: var(--danger); }
+.status-unauthenticated { background: var(--warn-bg); color: var(--warn); }
+
+#chat-new-btn {
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+}
+
+#chat-log {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.msg {
+  max-width: 70ch;
+  padding: 10px 14px;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg p { margin: 0; }
+
+.msg-user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #fff;
+}
+
+.msg-assistant {
+  align-self: flex-start;
+  background: #f1f2f4;
+  border: 1px solid var(--border);
+}
+
+.msg-error {
+  align-self: stretch;
+  background: var(--danger-bg);
+  color: var(--danger);
+  max-width: none;
+}
+
+.tool-call {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  background: #fff9e6;
+  border: 1px solid #f0e0a8;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 6px 0;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tool-label { font-weight: 700; color: #8a6d1a; }
+.tool-name { font-weight: 600; }
+.tool-summary { color: #6b6b6b; overflow-wrap: anywhere; }
+
+#chat-form {
+  display: flex;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--panel-bg);
+  flex: 0 0 auto;
+}
+
+#chat-input {
+  flex: 1;
+  resize: vertical;
+  min-height: 44px;
+  max-height: 220px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+#chat-send {
+  align-self: flex-end;
+  padding: 10px 18px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#chat-send:disabled, #chat-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ---------- 오른쪽: TC 검토 ---------- */
+
+#review-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  flex: 0 0 auto;
+}
+
+#export-btn {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 8px;
+  background: var(--ok);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#export-btn:disabled { background: var(--border); color: var(--text-muted); cursor: not-allowed; }
+
+#export-status { font-size: 0.82rem; color: var(--text-muted); }
+#export-status.ok { color: var(--ok); }
+#export-status.error { color: var(--danger); }
+
+.tc-title { font-size: 1.05rem; margin: 4px 0 8px; }
+
+.tc-meta { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+
+.tag {
+  font-size: 0.78rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.badges { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+
+.badge-withdrawn { background: var(--warn-bg); color: var(--warn); }
+.badge-edited { background: var(--edited-bg); color: var(--edited); }
+
+#review-body h3 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 18px 0 6px;
+}
+
+#review-body h3:first-of-type { margin-top: 8px; }
+
+#review-body ol { margin: 0; padding-left: 22px; }
+#review-body li { margin-bottom: 6px; }
+
+.precondition, .rationale {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0;
+}
+
+.slots { display: flex; flex-direction: column; gap: 6px; }
+
+.slot-row {
+  display: flex;
+  gap: 8px;
+  font-size: 0.88rem;
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: 6px;
+}
+
+.slot-key {
+  font-family: var(--mono);
+  color: var(--text-muted);
+  min-width: 120px;
+  flex: 0 0 auto;
+}
