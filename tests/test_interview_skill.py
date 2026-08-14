@@ -223,8 +223,44 @@ def test_design_doc_family_table_matches_family_meta():
         assert real_priority.value == priority, family
 
 
+def test_design_doc_counts_the_family_table_correctly():
+    """표 아래 문장이 세는 행 수가 실제 행 수·`FAMILY_META` 와 맞아야 한다.
+
+    `중단` 행이 표에 추가되자 *"위 표 9행 + `중단` = 키 10개"* 가 그 행을 두 번
+    세게 됐다 (표는 이미 10행이다). 집합 비교만으로는 이 문장이 틀린 것을
+    잡지 못한다 — 산문에 박힌 숫자는 아무도 안 보기 때문이다. §4 는 계열이
+    몇 개인지 확인하러 오는 자리라 이 숫자가 사실이어야 한다.
+    """
+    import re
+
+    from qatc.knowledge.gate import FAMILY_META
+
+    text = DESIGN.read_text(encoding="utf-8")
+    section = text.split("### TC 계열 → `TCKind` 대응", 1)[1].split("\n### ", 1)[0]
+    rows = _table_rows(section)
+
+    claim = re.search(r"위 표 (\d+)행", section)
+    assert claim, "표 행 수를 말하는 문장이 사라졌습니다"
+    assert int(claim.group(1)) == len(rows) == len(FAMILY_META), (
+        f"문장은 {claim.group(1)}행이라 하는데 실제 표는 {len(rows)}행 · "
+        f"FAMILY_META 는 {len(FAMILY_META)}개입니다"
+    )
+
+
 def test_design_doc_slot_table_matches_the_base_slot_set():
-    """§4 의 `슬롯 키 → 만드는 TC 계열` 표도 코드가 진실 원천이다."""
+    """§4 의 `슬롯 키 → 만드는 TC 계열` 표도 코드가 진실 원천이다.
+
+    **계열 칸은 사람이 복사하는 그대로 비교한다.** 예전에는 `family.strip("*")`
+    로 볼드를 벗겨내고 비교해서, `core_action` 행이 `**정상 경로**` 로 적혀
+    있는데도 이 테스트가 초록이었다. §4 는 바로 위 노트에서 *"이 열의 이름이 곧
+    `--family` 문자열이다"* 라고 말하는 자리라, 그대로 옮겨 적으면
+    `tc add --family "**정상 경로**"` 가 `오류: 등록되지 않은 계열` rc=1 로 죽는다
+    (실측). 강조를 벗기고 비교하는 테스트는 그 오해를 정확히 감춘다.
+
+    슬롯 키의 백틱은 벗긴다 — 코드 스팬은 식별자를 감싸는 이 문서의 관용구고
+    읽는 사람이 복사하는 것은 백틱 **안쪽**이다. 볼드는 이름 자체에 씌운
+    강조라 다르다.
+    """
     from qatc.knowledge.slots import BASE_SLOTS
 
     text = DESIGN.read_text(encoding="utf-8")
@@ -232,7 +268,7 @@ def test_design_doc_slot_table_matches_the_base_slot_set():
 
     doc = {}
     for key, _asked, family in _table_rows(section):
-        doc[key.strip("`")] = family.strip("*")
+        doc[key.strip("`")] = family
 
     code = {s.key: (s.tc_family or "(TC 없음 — 문맥)") for s in BASE_SLOTS}
     assert doc == code
