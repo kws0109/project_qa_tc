@@ -631,5 +631,6 @@ def test_export_on_a_locked_file_tells_the_user_to_close_excel(cfg_env, capsys):
         assert rc == 1
         assert "Excel" in out and "닫" in out
         assert "PermissionError" not in out
+        assert "ExportBlocked" not in out
     finally:
         os.chmod(path, stat.S_IWRITE)
