@@ -405,24 +405,64 @@ def test_slot_has_no_command_that_removes_a_slot():
     assert set(_subparser_choices(top["slot"])) == {"status", "init", "set", "add"}
 
 
-def test_skill_tells_the_model_about_the_default_game():
-    """기본 게임이 있으면 게임을 되묻지 않아야 한다.
+def test_skill_tells_the_model_about_the_default_game(cfg_env, capsys):
+    """기본 게임이 없을 때 CLI가 실제로 내는 오류를 스킬이 그대로 인용해야 하고,
+    "먼저 `--game` 없이 시도하고, 실패할 때만 묻는다" 는 지시가 있어야 하며,
+    "미리 물어본다" 는 옛 지시가 남아 있으면 안 된다.
 
-    이 문장이 없으면 모델은 신규 컨텐츠마다 `--game` 을 물어보고, 사용자는
-    `config --game` 을 설정한 보람이 없어진다.
+    **부분 문자열만 보는 첫 판은 두 가지를 놓쳤다** (리뷰에서 재현됨).
+    (1) 인용문을 실제로 실행하지 않고 옮겨 적었다면 CLI 문구가 바뀌어도 스킬은
+    낡은 문구를 계속 인용한다 — 그럴듯하지만 존재하지 않는 문구로 바꿔도
+    `"qatc config --game"` · `"기본 게임"` 부분 문자열은 여전히 있어 통과했다.
+    (2) 이 태스크의 핵심 지시("먼저 생략하고 시도")를 옛 지시("미리 묻는다")로
+    되돌려도, 손대지 않은 서두 문단에 `qatc config --game` 과 `기본 게임` 이라는
+    낱말이 남아 있어 부분 문자열 검사가 그대로 통과했다 — 이 태스크의 존재
+    이유가 없어졌는데도 초록이었다.
+
+    그래서 셋을 각각 못박는다: 오류 문구는 **실행해서** 얻은 문자열과 바이트
+    단위로 대조하고, 새 지시문은 있어야 하고, 옛 지시문은 없어야 한다
+    (같은 두 방향 고정을 `test_skill_step1_tells_the_model_to_hold_slot_init_until_the_overview_answer`
+    에서도 쓴다 — 한쪽만 보면 두 지시가 동시에 적힌 모순된 개정을 통과시킨다).
     """
+    assert main(["slot", "init", "신규컨텐츠"]) == 1
+    err = capsys.readouterr().out.strip()
+
     text = SKILL.read_text(encoding="utf-8")
-    assert "qatc config --game" in text
-    assert "기본 게임" in text
+    assert err in text, f"SKILL.md 가 실제 오류 문구를 그대로 인용하지 않습니다: {err!r}"
+
+    step1 = _step1(text)
+    assert "**`--game` 은 먼저 생략하고 시도한다.**" in step1, (
+        "1단계가 --game 을 먼저 생략하고 시도하라고 지시하지 않습니다"
+    )
+    assert "**`<게임>` 은 사용자에게 묻는다.**" not in step1, (
+        "게임을 미리 물어보라는 옛 지시가 1단계에 남아 있습니다"
+    )
 
 
 def test_readme_documents_the_default_game():
+    """`--game` 생략의 두 경로(읽기 = 추론, 생성 = 기본값)를 README가 구분해 설명해야 한다.
+
+    **부분 문자열만 보는 첫 판은 놓쳤다** (리뷰에서 재현됨) — 명령 목록의
+    `qatc config --game starrail  # 기본 게임 설정 ...` 한 줄에 `"config --game"`
+    과 `"기본 게임"` 이 이미 다 있어서, 그 아래 설명 문단을 통째로 지워도
+    초록이었다. 설명 문단에만 있고 명령 목록 줄에는 없는 문장으로 문단
+    자체를 못박는다.
+    """
     from pathlib import Path
 
     readme = Path(__file__).resolve().parent.parent / "README.md"
     text = readme.read_text(encoding="utf-8")
-    assert "config --game" in text
-    assert "기본 게임" in text
+
+    assert "qatc config --game starrail" in text        # 명령 목록의 예시 줄
+
+    # 설명 문단 — 읽기 명령(추론)과 생성 명령(기본값)을 구분해 말해야 한다.
+    # 두 문장 모두 문단에만 있고 명령 목록 줄의 주석에는 없다.
+    assert "컨텐츠 이름이 한 게임에서만 발견되면 알아서 찾습니다." in text, (
+        "README 가 읽기 명령의 추론 동작을 설명하지 않습니다"
+    )
+    assert "**생성 명령**(`slot init`, `knowledge`)은 `qatc config --game <게임>` 으로 정해 둔" in text, (
+        "README 가 생성 명령이 기본 게임을 쓴다고 설명하지 않습니다"
+    )
 
 
 def test_slot_init_is_additive_and_keeps_wrongly_guessed_type_slots(cfg_env, capsys):
