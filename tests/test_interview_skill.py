@@ -178,3 +178,124 @@ def test_readme_tells_the_user_that_knowledge_output_is_gitignored():
     section = readme[start:readme.index("---", start)]
     assert "knowledge/" in section
     assert ".gitignore" in section
+
+
+# --- 설계 문서 §4 가 실제 계열 이름을 싣는다 (D1) -------------------------
+
+DESIGN = ROOT / "docs" / "superpowers" / "specs" / "2026-08-14-interview-driven-tc-design.md"
+
+
+def _table_rows(section: str) -> list[list[str]]:
+    """마크다운 표에서 구분선과 헤더를 뺀 데이터 행."""
+    rows = []
+    for line in section.splitlines():
+        if not line.startswith("|") or set(line) <= set("|- "):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        rows.append(cells)
+    return rows[1:]          # 헤더 제외
+
+
+def test_design_doc_family_table_matches_family_meta():
+    """§4 의 `TC 계열 → TCKind` 표가 `FAMILY_META` 와 정확히 같아야 한다.
+
+    §4 는 **`--family` 에 넣을 문자열을 찾으러 보는 표**다. 여기에
+    `미해금 상태 접근` · `미저장 이탈 / 취소` 처럼 `tc add` 가 거부하는 이름이
+    적혀 있으면 (실측으로 확인된 상태였다) 그대로 옮겨 적은 호출이 rc=1 로
+    죽는다. 계열이 늘거나 이름이 바뀌면 이 테스트가 깨져 문서도 같이 고치게 된다.
+    """
+    from qatc.knowledge.gate import FAMILY_META
+
+    text = DESIGN.read_text(encoding="utf-8")
+    section = text.split("### TC 계열 → `TCKind` 대응", 1)[1].split("\n### ", 1)[0]
+
+    doc = {}
+    for family, kind, priority in _table_rows(section):
+        doc[family] = (kind.strip("`"), priority)
+
+    assert set(doc) == set(FAMILY_META), (
+        f"문서에만: {sorted(set(doc) - set(FAMILY_META))} / "
+        f"코드에만: {sorted(set(FAMILY_META) - set(doc))}"
+    )
+    for family, (kind, priority) in doc.items():
+        real_kind, real_priority = FAMILY_META[family]
+        assert real_kind.name == kind, family
+        assert real_priority.value == priority, family
+
+
+def test_design_doc_slot_table_matches_the_base_slot_set():
+    """§4 의 `슬롯 키 → 만드는 TC 계열` 표도 코드가 진실 원천이다."""
+    from qatc.knowledge.slots import BASE_SLOTS
+
+    text = DESIGN.read_text(encoding="utf-8")
+    section = text.split("### 기본 슬롯", 1)[1].split("\n### ", 1)[0]
+
+    doc = {}
+    for key, _asked, family in _table_rows(section):
+        doc[key.strip("`")] = family.strip("*")
+
+    code = {s.key: (s.tc_family or "(TC 없음 — 문맥)") for s in BASE_SLOTS}
+    assert doc == code
+
+
+# --- SKILL.md 1단계의 순서 (D5) ------------------------------------------
+
+
+def _step1(text: str) -> str:
+    return text[text.index("## 1단계"):text.index("## 2단계")]
+
+
+def test_skill_step1_asks_the_overview_before_running_slot_init():
+    """유형을 **듣기 전에** `slot init` 을 실행하라고 지시하면 안 된다.
+
+    예전 1단계는 "`slot init` 을 실행하고 개괄 질문으로 시작한다" 라고 해 놓고
+    아래에서 "답변에서 유형을 판정한다" 라고 했다 — 유형을 들어보기 전에
+    추측하라는 뜻이 된다. `slot init` 은 가산 전용이라 잘못 넣은 유형의 슬롯을
+    CLI 로 지울 수 없으므로, 그 추측은 되돌릴 수 없는 실수다.
+    """
+    step1 = _step1(SKILL.read_text(encoding="utf-8"))
+
+    question = step1.index("먼저 이 컨텐츠가 어떤 것인지 설명해주세요")
+    init = step1.index(".venv/Scripts/qatc.exe slot init")
+    assert question < init, "개괄 질문이 slot init 뒤에 있다"
+
+    # 유형 판정도 답변 뒤여야 한다
+    decide = step1.index("답변에서 유형을 판정한다")
+    assert question < decide < init
+
+
+def test_skill_step1_explains_that_slot_init_cannot_be_undone():
+    """"왜 먼저인가"가 없으면 다음 개정에서 순서가 다시 뒤집힌다."""
+    step1 = _step1(SKILL.read_text(encoding="utf-8"))
+    assert "가산 전용" in step1
+    assert "지우는 CLI 명령은 없다" in step1
+
+
+def test_slot_has_no_command_that_removes_a_slot():
+    """위 문서 주장의 전제 — `qatc slot` 에 제거 명령이 실제로 없어야 한다.
+
+    나중에 `slot remove` 가 생기면 이 테스트가 깨지고, 그때 SKILL.md 의
+    "지울 수 없다" 도 함께 고치게 된다.
+    """
+    top = _subparser_choices(build_parser())
+    assert set(_subparser_choices(top["slot"])) == {"status", "init", "set", "add"}
+
+
+def test_slot_init_is_additive_and_keeps_wrongly_guessed_type_slots(cfg_env, capsys):
+    """문서가 근거로 드는 동작을 실제로 실행해 확인한다.
+
+    잘못 추측한 유형으로 만든 뒤 `--types` 없이 다시 실행해도 그 슬롯은 남는다.
+    """
+    assert main(["slot", "init", "유형추측", "--game", "starrail", "--types", "던전"]) == 0
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+    main(["slot", "status", "유형추측", "--json"])
+    before = json.loads(capsys.readouterr().out)
+    assert before["total"] == 14
+    assert any(s["key"].startswith("던전.") for s in before["open"])
+
+    assert main(["slot", "init", "유형추측", "--game", "starrail"]) == 0
+    capsys.readouterr()
+    main(["slot", "status", "유형추측", "--json"])
+    after = json.loads(capsys.readouterr().out)
+    assert after["total"] == 14, "가산 전용이 아니게 되었다면 SKILL.md 도 고쳐야 한다"
+    assert any(s["key"].startswith("던전.") for s in after["open"])

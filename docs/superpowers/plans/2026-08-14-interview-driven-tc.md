@@ -13,11 +13,16 @@
 > 이 계획서는 이력이므로 본문은 그대로 둔다. 다만 리뷰 반영 라운드에서 바뀐
 > 것이 있어 코드와 대조할 때 참고하라.
 >
-> - Task 7 · Task 9 단계(약 2012 · 2099 · 2557행)가 보여주는 슬롯 상태 문구 3벌
+> - Task 7 · Task 9 단계가 보여주는 슬롯 상태 문구 3벌
 >   (`{"empty": "비어있음", "unknown": "사용자가 모름", "na": "해당 없음"}` 류)은
 >   지금 코드에 없다. `qatc/knowledge/models.py` 의 `SLOT_STATUS_LABEL` 한 곳으로
 >   통합됐고, 문구도 `슬롯이 비어 있음` · `사용자가 모른다고 답함` ·
 >   `해당 없음으로 표시됨` 으로 통일됐다.
+>   해당 위치는 `reason = {"empty"` 와 `_STATUS_LABEL = {"empty"` 로 찾으면 된다
+>   (이 개정 기준 2030 · 2117 · 2575행). **행번호로 찾지 말고 문자열로 찾아라** —
+>   예전 판이 적은 세 숫자는 전부 정확히 13행씩 어긋나 있었다. 이 덧붙임 블록
+>   자신이 13행이라, 본문을 그만큼 밀어낸 뒤의 위치가 아니라 밀어내기 전의
+>   위치를 적었기 때문이다.
 > - 슬롯 상태 문구를 화면에 쓰는 자리는 이제 `FamilySkip.reason` 을 거친다 —
 >   미등록 계열은 상태가 아니라 계열 이름이 문제라 사유가 다르기 때문이다.
 
@@ -3046,7 +3051,8 @@ git rm -q tests/test_capture.py tests/test_analyze.py tests/test_icons.py tests/
 - [ ] **Step 6: `pyproject.toml` 정리**
 
 `[project.optional-dependencies]` 에서 캡처·GUI·OCR 관련 항목을 지운다. 남는 런타임
-의존성은 `openpyxl` 뿐이다. `pytest` 는 dev 로 남긴다.
+의존성은 `openpyxl`(xlsx 출력)과 `pyyaml`(`qatc/profiles.py` 의 게임 프로파일 로딩)
+**둘**이다. `pytest` 는 dev 로 남긴다.
 
 - [ ] **Step 7: 테스트 통과 확인**
 

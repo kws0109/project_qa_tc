@@ -15,8 +15,9 @@
 >   `qatc/llm/` 이 없고 `--legacy` 플래그도 없다. 이력은 git log 에 있다.
 > - §3 의 allowlist 예시에 있는 `Bash(.venv/Scripts/qatc.exe list *)` →
 >   `list` 명령이 사라져 실제 `.claude/settings.json` 에는 없다.
-> - 익스포터 경로 `export/excel.py` (§2 · §4 · §6 · §7) → 실제 파일은
->   **`qatc/export/tc_excel.py`** 다.
+> - 익스포터 경로 `export/excel.py` (§2 · §3 · §6 · §7) → 실제 파일은
+>   **`qatc/export/tc_excel.py`** 다. (§4 에는 그 문자열이 없다 — 예전 판이
+>   §4 라고 적었는데, 모듈 표는 §3 에 있다.)
 > - §6 의 `tc list` 예시 출력에 있는 슬롯 상태 문구 `[비어있음]` ·
 >   `[사용자가 모름]` → `qatc/knowledge/models.py` 의 `SLOT_STATUS_LABEL` 한
 >   곳으로 통합되면서 `[슬롯이 비어 있음]` · `[사용자가 모른다고 답함]` ·
@@ -289,18 +290,27 @@ knowledge/starrail.db
 | 슬롯 키 | 묻는 것 | 만드는 TC 계열 |
 |---|---|---|
 | `overview` | 이 컨텐츠가 무엇이고 왜 쓰는가 | (TC 없음 — 문맥) |
-| `unlock` | 언제부터 쓸 수 있는가 | 미해금 상태 접근 |
+| `unlock` | 언제부터 쓸 수 있는가 | 미해금 접근 |
 | `entry` | 어디서 어떻게 들어가는가 | 진입 경로 |
 | `screen` | 무엇이 보이고 무엇을 누를 수 있는가 | 요소 표시 확인 |
 | `core_action` | 이 컨텐츠의 주 동작 | **정상 경로** |
-| `constraints` | 정원·상한·중복 제한 등 | 경계값 (0 / 최대 / 초과) |
+| `constraints` | 정원·상한·중복 제한 등 | 경계값 |
 | `cost` | 무엇을 소모하는가 | 재화 부족 |
 | `failure` | 안 되는 경우와 그때 피드백 | 실패 경로 |
 | `result` | 성공하면 무엇이 어디에 반영되는가 | 결과 검증 |
-| `exit` | 저장 시점 · 취소 가능 여부 | 미저장 이탈 / 취소 |
+| `exit` | 저장 시점 · 취소 가능 여부 | 미저장 이탈 |
 
 `overview`와 `core_action` 둘만 채워도 정상 경로 TC는 나온다. 나머지는 채울수록
 예외 TC가 붙는다.
+
+> **2026-08-14 정정 — 이 열의 이름이 곧 `--family` 문자열이다.**
+> 정정 전에는 `미해금 상태 접근` · `미저장 이탈 / 취소` · `경계값 (0 / 최대 /
+> 초과)` 로 적혀 있었는데, 앞의 둘은 `qatc tc add --family` 가 **거부하는**
+> 문자열이었다 (실제 이름은 `미해금 접근` · `미저장 이탈`). 세 번째의 괄호는
+> 설명이지 이름의 일부가 아니라 같은 오해를 부른다. 진실 원천은
+> `qatc/knowledge/gate.py` 의 `FAMILY_META` 키 10개다.
+> 이 표의 슬롯 **순서**는 설계 당시 순서이고, 실제 인터뷰 진행 순서는
+> `qatc/knowledge/slots.py` 의 `BASE_SLOTS` 순서다.
 
 ### TC 계열 → `TCKind` 대응
 
@@ -314,13 +324,16 @@ knowledge/starrail.db
 | 경계값 | `BOUNDARY` | Medium |
 | 재화 부족 | `EXCEPTION` | Medium |
 | 실패 경로 | `EXCEPTION` | Medium |
-| 미해금 상태 접근 | `EXCEPTION` | Low |
-| 미저장 이탈 / 취소 | `REVERSE` | Medium |
+| 미해금 접근 | `EXCEPTION` | Low |
+| 미저장 이탈 | `REVERSE` | Medium |
 | 요소 표시 확인 | `UIUX` | Low |
+| 중단 | `INTERRUPT` | Medium |
 
-`INTERRUPT`는 이 설계의 어느 계열도 만들지 않는다. 진술에서 중단 상황(통신 끊김,
-앱 강제 종료)이 도출되는 경우가 없기 때문이다. `slot add`로 사용자가 그런 항목을
-추가하면 그때 쓴다.
+**기본 슬롯 세트는 `중단` 계열을 만들지 않는다.** 진술에서 중단 상황(통신 끊김,
+앱 강제 종료)이 도출되는 경우가 없기 때문이다. 다만 계열 자체는 `FAMILY_META` 에
+등록돼 있어서 `slot add ... --family 중단` 으로 사용자가 항목을 추가하면 그때
+쓰인다 — 등록돼 있지 않으면 `slot add` 와 `tc add` 가 그 이름을 거부한다.
+위 표 9행 + `중단` = `FAMILY_META` 의 키 10개 전부다.
 
 `Priority`는 위 값을 기본으로 두되 TC를 쓰는 Claude Code가 진술 내용에 따라 조정할
 수 있다 — 재화를 소모하는 동작은 되돌릴 수 없으므로 한 단계 올리는 식이다.
