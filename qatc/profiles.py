@@ -32,8 +32,26 @@ class GameProfile:
 
     @classmethod
     def load(cls, path: Path | str) -> GameProfile:
+        """YAML 한 장을 프로파일로 읽는다.
+
+        :raises ValueError: 최상위가 매핑이 아닐 때. `load_profiles` 가 이미
+            잡는 타입이므로 그 파일만 건너뛰어진다.
+
+        문법 오류(`yaml.YAMLError`)만 막으면 부족하다. **문법은 맞지만 최상위가
+        매핑이 아닌** YAML — 리스트를 붙여넣은 파일, 콜론 없는 메모 한 줄
+        (스칼라로 파싱된다) — 은 `from_dict` 의 `.get` 에서 `AttributeError` 를
+        내며, 그것은 `load_profiles` 의 그물에 걸리지 않고 CLI 포괄 핸들러까지
+        올라가 `오류: AttributeError: 'list' object has no attribute 'get'` 이
+        된다. 파일 **하나**가 모든 게임의 명령을 죽인다.
+
+        판정 방식과 문구는 `AppConfig.load` 의 같은 실패 유형(설정 JSON 의
+        최상위가 객체가 아님)에서 그대로 가져왔다 — 두 로더가 사람이 손으로
+        만드는 같은 형태의 깨짐을 다르게 대접할 이유가 없다.
+        """
         p = Path(path)
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        if not isinstance(data, dict):
+            raise ValueError(f"최상위가 객체가 아닙니다 ({type(data).__name__})")
         return cls.from_dict(p.stem, data)
 
 
