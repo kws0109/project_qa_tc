@@ -20,6 +20,24 @@ def test_known_games_lists_profile_keys_sorted(tmp_path):
     assert known_games(cfg) == ["genshin", "starrail"]
 
 
+def test_known_games_sorts_independently_of_the_loader(tmp_path, monkeypatch):
+    """`known_games` 는 스스로 정렬한다 — `load_profiles` 의 순서에 기대지 않는다.
+
+    실제 `load_profiles` 는 `sorted(glob(...))` 로 넣으므로 dict 가 이미
+    알파벳 순이다. 그래서 진짜 로더를 거치면 `sorted()` 를 `list()` 로 바꿔도
+    결과가 같아 아무 테스트도 그 호출을 지키지 못한다 (구현자 실측).
+    로더를 비정렬 dict 로 갈아끼워 `known_games` 자신의 계약을 고정한다.
+    """
+    import qatc.games as games
+
+    monkeypatch.setattr(
+        games, "load_profiles",
+        lambda _dir: {"starrail": object(), "genshin": object()},
+    )
+    cfg = _cfg(tmp_path, [])
+    assert known_games(cfg) == ["genshin", "starrail"]
+
+
 def test_registered_game_passes_without_the_skip_warning(tmp_path, capsys):
     """등록된 이름은 통과한다 — 그리고 **검증을 건너뛴 것이 아니어야 한다.**
 
