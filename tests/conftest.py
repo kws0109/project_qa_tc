@@ -83,6 +83,12 @@ def cfg_env(tmp_path, monkeypatch):
         (pdir / f"{key}.yaml").write_text(f"name: {name}\n", encoding="utf-8")
 
     monkeypatch.setenv("APPDATA", str(appdata))
+    # 저장하기 **전에** 격리를 확인한다. 이 줄이 없으면 `setenv` 가 빠졌을 때
+    # 픽스처 자신이 개발자의 실제 config.json 을 덮어쓴 뒤에야 테스트가 실패한다
+    # — 탐지는 되지만 피해는 이미 났다. 여기서 막으면 쓰기 자체가 불가능해진다.
+    assert AppConfig.config_file().is_relative_to(tmp_path), (
+        f"APPDATA 격리 실패 — 설정 파일이 임시 폴더 밖을 가리킨다: {AppConfig.config_file()}"
+    )
     AppConfig(knowledge_root=str(kroot), profiles_dir=str(pdir)).save()
     return kroot
 
