@@ -103,6 +103,16 @@ def test_replace_generated_reports_how_many_it_deleted(make_tc, store):
     반환이 `(added, kept)` 뿐이라 `cli_knowledge.py` 에는 삭제를 보고할 방법이
     아예 없었고, 실측에서 TC 2건이 `✓ … 1건 저장` rc=0 과 함께 증발했다.
     """
+    # 지울 것이 없는 첫 호출은 0 이어야 한다 — CLI 가 이 값으로 ⚠ 경고를 켠다.
+    # 예전에는 이 단언이 `..._reports_zero_deleted_on_first_call` 이라는 별도
+    # 테스트였는데 **고유하게 잡는 변이가 없었다**: 그것을 죽이는 변이
+    # (`deleted` 초기값을 1 로, 반환을 `len(cases)` 로)는 각각 이 테스트를
+    # 포함해 7건·6건을 함께 죽였다. 같은 자리에서 0 → 4 를 잇달아 보이면
+    # "지운 수" 가 정말 지운 것을 세는지가 오히려 더 잘 드러난다.
+    assert store.replace_generated(
+        "파티편성", "정상 경로", [make_tc(title="첫 배치")], ["core_action"]
+    ) == (1, 0, 0)
+
     for title in ("A", "B", "C"):
         store.add_testcase("파티편성", "정상 경로", make_tc(title=title), ["core_action"])
     # 다른 계열은 이 호출과 무관하다 — 삭제 수에 섞이면 안 된다
@@ -111,16 +121,8 @@ def test_replace_generated_reports_how_many_it_deleted(make_tc, store):
     added, kept, deleted = store.replace_generated(
         "파티편성", "정상 경로", [make_tc(title="신규")], ["core_action"]
     )
-    assert (added, kept, deleted) == (1, 0, 3)
+    assert (added, kept, deleted) == (1, 0, 4)      # 첫 배치 + A · B · C
     assert {t.title for t in store.testcases("파티편성")} == {"신규", "경계값 것"}
-
-
-def test_replace_generated_reports_zero_deleted_on_first_call(make_tc, store):
-    """지운 것이 없으면 0 이어야 한다 — CLI 가 이 값으로 경고를 켠다."""
-    added, kept, deleted = store.replace_generated(
-        "파티편성", "정상 경로", [make_tc(title="첫 배치")], ["core_action"]
-    )
-    assert (added, kept, deleted) == (1, 0, 0)
 
 
 def test_replace_generated_only_touches_named_family(make_tc, store):

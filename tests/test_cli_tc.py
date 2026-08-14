@@ -439,8 +439,11 @@ def test_second_add_on_same_family_says_how_many_it_replaced(stdin_text, ready, 
                  "--origin", "interview", "--json", "-"]) == 0
     first = capsys.readouterr().out
     assert "TC 2건 저장" in first
-    assert "⚠" not in first            # 지운 게 없으면 경고하지 않는다
-    assert "교체" not in first
+    # 지운 게 없으면 `if deleted:` 블록이 통째로 나오지 않으므로 `⚠` 하나면
+    # 충분하다. 여기 있던 `assert "교체" not in first` 는 지웠다 — "교체" 도
+    # "다시 실행하세요" 도 모두 그 블록 안 문구라 새로 잡아내는 변이가 없는,
+    # 이 브랜치가 아홉 번 만들어낸 "이웃의 부분문자열" 모양이었다.
+    assert "⚠" not in first
     assert [t.title for t in _stored(ready)] == ["A", "B"]
 
     stdin_text(_titled("C"))
