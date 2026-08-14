@@ -541,6 +541,88 @@ def test_readme_documents_the_default_game():
     )
 
 
+def test_readme_typo_claim_matches_what_both_command_families_do(cfg_env, capsys):
+    """README 의 "오타는 거부된다 — 막는 방식은 둘" 을 실행해 확인한다.
+
+    같은 주장의 SKILL.md 쌍둥이는
+    `test_skill_typo_claim_matches_what_both_command_families_do` 가 이미
+    실측에 묶어 두었는데, **README 쪽은 어느 테스트도 잡고 있지 않았다** —
+    두 문장을 정확히 정반대로 뒤집어도(거부되지 않는다 · 조용히 생긴다 ·
+    두 명령군의 역할 교환) 스위트가 413 그대로 초록이었다 (실측).
+
+    README 는 이 도구를 처음 켜는 사람이 읽는 자리라, 여기서 거짓말을 하면
+    "오타를 내도 CLI 가 잡아 준다" 를 믿고 쓰다가 엉뚱한 DB 에 인터뷰가 쌓인다.
+    그래서 두 명령군을 각각 실행해 결론과 **기전**을 함께 못박는다 — 기전이
+    틀리면 (예: 읽기도 `profiles/` 와 대조한다고 적히면) 다음 사람이 읽기
+    경로에 `validate_game` 을 넣어 설계 결정 #3 을 뒤집는다.
+    """
+    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    capsys.readouterr()
+
+    # (1) 생성 명령 — `profiles/` 와 대조해 거부한다
+    assert main(["slot", "init", "신규", "--game", "starrial"]) == 1
+    assert "등록된 게임이 아닙니다" in capsys.readouterr().out
+
+    # (2) 읽기 명령 — 대조하지 않지만 없는 DB 를 만들지 않는다
+    assert main(["slot", "status", "파티편성", "--game", "starrial"]) == 1
+    read_msg = capsys.readouterr().out
+    assert "지식 DB가 없습니다" in read_msg
+    assert "등록된 게임이 아닙니다" not in read_msg     # 대조는 하지 않는다
+
+    assert not (cfg_env / "starrial.db").exists(), "유령 DB 가 생겼다"
+
+    readme = _flat(README.read_text(encoding="utf-8"))
+    assert "오타 난 게임 이름은 거부되며, 잘못된 이름으로 새 DB가 생기지 않습니다." in readme, (
+        "README 가 오타 거부라는 결론을 말하지 않습니다"
+    )
+    assert ("**생성 명령**은 `profiles/` 의 프로파일과 대조하고, **읽기 명령**은 "
+            "대조하지 않는 대신 그 이름의 DB 파일이 없으면 만들지 않고 멈춥니다.") in readme, (
+        "README 가 두 명령군의 막는 방식을 (또는 그 방향을) 옳게 말하지 않습니다"
+    )
+
+
+def test_readme_zero_profile_escape_hatch_is_real(cfg_env, capsys, tmp_path):
+    """README 의 "프로파일 0개면 대조를 건너뛴다" 도 실행해 확인한다 (설계 결정 #1).
+
+    이쪽도 무테스트였다 — "모든 게임 이름을 거부합니다 (경고는 없습니다)" 로
+    통째로 뒤집어도 413 그대로 초록이었다 (실측). 그런데 이 문장은 README 가
+    **손으로 고치라고 권하는 키**(`profiles_dir`)의 오타 하나로 도달하는
+    상태를 설명하는 유일한 자리다. 반대로 적혀 있으면, 오타가 안 걸러지는 것을
+    본 사용자가 "검증이 도는데 왜 통과하지" 라며 엉뚱한 곳을 뒤진다.
+
+    벽이 아니라 **탈출구**라는 것이 요지이므로 (무조건 거부하면 도구가 벽돌이
+    된다) 등록된 적 없는 이름이 실제로 통과하는지, 경고가 정확히 한 줄
+    보이는지, 그리고 README 가 권하는 확인 경로(`qatc config`)가 그 상태를
+    실제로 드러내는지까지 함께 본다.
+    """
+    for f in (tmp_path / "profiles").glob("*.yaml"):
+        f.unlink()
+
+    # 등록된 적 없는 이름인데도 통과한다 — 벽이 아니라 탈출구다
+    assert main(["slot", "init", "새컨텐츠", "--game", "듣도보도못한게임"]) == 0
+    cap = capsys.readouterr()
+    assert "등록된 게임이 아닙니다" not in cap.out + cap.err
+
+    # 그러나 조용하지 않다 — 경고 **한 줄**이 어디를 봤는지와 함께 남는다
+    warnings = [ln for ln in cap.err.splitlines() if "검증을 건너뜁니다" in ln]
+    assert len(warnings) == 1, cap.err
+    assert str(tmp_path / "profiles") in warnings[0]
+
+    # README 가 권하는 확인 경로가 이 상태를 실제로 드러낸다
+    assert main(["config"]) == 0
+    assert "사용 가능한 프로파일 (0개)" in capsys.readouterr().out
+
+    readme = _flat(README.read_text(encoding="utf-8"))
+    assert ("`profiles/` 에 프로파일이 하나도 없으면 대조를 **건너뜁니다** "
+            "(경고 한 줄을 남깁니다).") in readme, (
+        "README 가 프로파일 0개 탈출구를 말하지 않습니다"
+    )
+    assert ("`profiles_dir` 설정을 잘못 고치면 이 상태가 되니, 오타를 거부하지 "
+            "않는다 싶으면 `qatc config` 로 프로파일 목록부터 확인하세요.") in readme, (
+        "README 가 이 상태에 어떻게 도달하고 어떻게 확인하는지 말하지 않습니다"
+    )
+
+
 def test_slot_init_is_additive_and_keeps_wrongly_guessed_type_slots(cfg_env, capsys):
     """문서가 근거로 드는 동작을 실제로 실행해 확인한다.
 
