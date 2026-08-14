@@ -196,4 +196,9 @@ def test_locked_output_directory_also_raises_export_blocked(monkeypatch, tmp_pat
     monkeypatch.setattr(Path, "mkdir", _denied)
     with pytest.raises(ExportBlocked) as e:
         export_tc_excel("컨텐츠", [], [], tmp_path / "하위" / "out.xlsx")
-    assert "PermissionError" not in str(e.value)
+    msg = str(e.value)
+    assert "PermissionError" not in msg
+    # 브리핑: "메시지는 wb.save 쪽과 같은 문장을 쓴다 — 사용자에게는 같은 상황이다."
+    # mkdir 실패도 wb.save 실패(test_locked_target_raises_export_blocked_with_next_action)와
+    # 같은 안내를 담아야 한다 — 별도 메시지로 갈라지는 것을 여기서 막는다.
+    assert "Excel" in msg and "닫" in msg
