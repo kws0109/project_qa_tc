@@ -179,14 +179,52 @@ def test_skipped_profile_notice_survives_the_console_codepage(tmp_path, monkeypa
     `print` 로 되돌려도 전체 스위트가 통과했다. 실제 한국어 Windows 콘솔은
     cp949 라, 프로파일 파일 이름에 코드페이지 밖 문자가 하나만 있어도
     `qatc config` 가 UnicodeEncodeError 로 죽는다. 여기서는 그 콘솔을 재현한다.
+
+    이 안내는 이제 **stderr** 로 나가므로 (`--json` 오염 회귀) 갈아끼우는 것도
+    `sys.stderr` 다. 보호가 `_warn` 쪽에 다시 구현되어 갈라지면 이 테스트가
+    깨진다 — cp949 콘솔은 stdout 만 골라 괴롭히지 않는다.
     """
     from qatc.profiles import load_profiles
 
     (tmp_path / "깨진✓.yaml").write_text("key: [닫히지 않음", encoding="utf-8")
 
     buf, stream = _cp949_stream()
-    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(sys, "stderr", stream)
 
     assert load_profiles(tmp_path) == {}     # 맨 print 였다면 여기서 예외로 죽는다
     stream.flush()
     assert "건너뜁니다" in buf.getvalue().decode("cp949")
+
+
+# --- `_warn` — 진단 전용 채널 (최종 검토 M2) ---------------------------------
+
+
+def test_warn_writes_to_stderr_and_leaves_stdout_untouched(capsys):
+    """`_warn` 은 stderr 로만 쓴다.
+
+    `--json` 명령의 stdout 은 JSON 하나여야 한다. 진단이 한 줄이라도 섞이면
+    `json.loads` 가 죽는데 rc 는 0 이라, 호출자는 성공했다고 믿는다.
+    """
+    from qatc.console import _warn
+
+    _warn("[경고] 진단 한 줄")
+    cap = capsys.readouterr()
+    assert "진단 한 줄" in cap.err
+    assert cap.out == ""
+
+
+def test_warn_survives_the_console_codepage(monkeypatch):
+    """stderr 도 cp949 다 — `_p` 와 같은 보호를 받아야 한다.
+
+    `_warn` 이 `print(..., file=sys.stderr)` 를 직접 쓰면 이 테스트가 죽는다.
+    """
+    from qatc.console import _warn
+
+    buf, stream = _cp949_stream()
+    monkeypatch.setattr(sys, "stderr", stream)
+
+    _warn("✓ 진단")
+    stream.flush()
+    written = buf.getvalue().decode("cp949")
+    assert "진단" in written
+    assert "✓" not in written

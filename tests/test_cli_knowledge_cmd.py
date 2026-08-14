@@ -641,3 +641,81 @@ def test_export_on_a_locked_file_tells_the_user_to_close_excel(cfg_env, capsys):
         assert "ExportBlocked" not in out
     finally:
         os.chmod(path, stat.S_IWRITE)
+
+
+# --- `--json` 의 표준출력은 JSON 하나여야 한다 (최종 검토 F/M2) ---------------
+#
+# 회귀 배경: T4 가 `cmd_knowledge` 앞에 `resolve_game` 을 넣으면서 이 명령이
+# 처음으로 `load_profiles` 를 거치게 됐다. 프로파일이 0개면 `[경고] …` 가,
+# 깨진 YAML 이 있으면 `[프로파일] …` 여러 줄이 **JSON 앞 stdout 에** 붙어
+# `json.loads` 가 죽는데 **rc 는 0** 이다 — 호출자(인터뷰 모델)는 성공했다고
+# 믿고 빈 손으로 진행한다. 진단은 지우지 않고 stderr 로 보낸다.
+
+
+def _json_commands() -> list[list[str]]:
+    """표준출력에 JSON 을 내는 명령 전부. 새 명령이 생기면 여기 추가한다."""
+    return [
+        ["slot", "status", "파티편성", "--json"],
+        ["tc", "plan", "파티편성", "--json"],
+        ["knowledge", "--game", "starrail", "--json"],
+    ]
+
+
+@pytest.mark.parametrize("argv", _json_commands(), ids=lambda a: " ".join(a[:2]))
+def test_json_stdout_stays_parseable_when_a_profile_is_broken(
+        cfg_env, capsys, tmp_path, argv):
+    """깨진 프로파일 YAML 이 있어도 `--json` 의 stdout 은 JSON 하나다."""
+    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    capsys.readouterr()
+    (tmp_path / "profiles" / "깨짐.yaml").write_text("name: [깨진\n", encoding="utf-8")
+
+    assert main(argv) == 0
+    cap = capsys.readouterr()
+    json.loads(cap.out)          # 진단이 섞였다면 JSONDecodeError 로 죽는다
+
+
+@pytest.mark.parametrize("argv", _json_commands(), ids=lambda a: " ".join(a[:2]))
+def test_json_stdout_stays_parseable_when_there_are_no_profiles(
+        cfg_env, capsys, tmp_path, argv):
+    """프로파일이 0개여도 `--json` 의 stdout 은 JSON 하나다.
+
+    이쪽은 `validate_game` 이 **의도적으로** 내는 경고다 (프로파일 0개면 검증을
+    건너뛴다 — 무조건 거부하면 도구가 벽돌이 된다). 의도된 경고라도 기계가 읽는
+    채널에 섞이면 안 된다는 것이 이 테스트의 요지다.
+    """
+    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    capsys.readouterr()
+    for f in (tmp_path / "profiles").glob("*.yaml"):
+        f.unlink()
+
+    assert main(argv) == 0
+    json.loads(capsys.readouterr().out)
+
+
+def test_broken_profile_notice_goes_to_stderr_not_stdout(cfg_env, capsys, tmp_path):
+    """진단을 **지우지 않는다** — 사람이 볼 수 있게 stderr 로 옮길 뿐이다.
+
+    억제해 버리면 왜 게임 이름이 거부되는지 아무도 모르게 된다. 파일 이름이
+    stderr 에 남아야 어느 파일을 고칠지 알 수 있다.
+    """
+    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    capsys.readouterr()
+    (tmp_path / "profiles" / "깨짐.yaml").write_text("name: [깨진\n", encoding="utf-8")
+
+    assert main(["knowledge", "--game", "starrail", "--json"]) == 0
+    cap = capsys.readouterr()
+    assert "깨짐.yaml" in cap.err
+    assert "깨짐.yaml" not in cap.out
+
+
+def test_no_profile_warning_goes_to_stderr_not_stdout(cfg_env, capsys, tmp_path):
+    """프로파일 0개 경고도 마찬가지다 — 보이되 stdout 은 더럽히지 않는다."""
+    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    capsys.readouterr()
+    for f in (tmp_path / "profiles").glob("*.yaml"):
+        f.unlink()
+
+    assert main(["knowledge", "--game", "starrail", "--json"]) == 0
+    cap = capsys.readouterr()
+    assert "검증을 건너뜁니다" in cap.err
+    assert "검증을 건너뜁니다" not in cap.out

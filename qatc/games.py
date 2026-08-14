@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from .config import AppConfig
-from .console import _p
+from .console import _warn
 from .profiles import load_profiles
 
 
@@ -33,7 +33,7 @@ def validate_game(cfg: AppConfig, game: str) -> None:
     """
     names = known_games(cfg)
     if not names:
-        _p(f"[경고] {cfg.profiles_path} 에 프로파일이 없어 --game 검증을 건너뜁니다.")
+        _warn(f"[경고] {cfg.profiles_path} 에 프로파일이 없어 --game 검증을 건너뜁니다.")
         return
     if game not in names:
         raise SystemExit(

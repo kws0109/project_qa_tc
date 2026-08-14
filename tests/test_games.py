@@ -46,7 +46,10 @@ def test_registered_game_passes_without_the_skip_warning(tmp_path, capsys):
     """
     cfg = _cfg(tmp_path, ["starrail"])
     assert validate_game(cfg, "starrail") is None
-    assert "건너뜁니다" not in capsys.readouterr().out
+    cap = capsys.readouterr()
+    # 경고는 이제 stderr 로 간다. `out` 만 보면 이 단언은 **항상 참**이 되어
+    # 검증을 통째로 없앤 뮤테이션을 다시 통과시킨다 — 두 채널을 함께 본다.
+    assert "건너뜁니다" not in cap.out + cap.err
 
 
 def test_typo_is_rejected_and_lists_the_valid_names(tmp_path):
@@ -60,15 +63,22 @@ def test_typo_is_rejected_and_lists_the_valid_names(tmp_path):
 
 
 def test_no_profiles_at_all_skips_validation_loudly(tmp_path, capsys):
-    """프로파일이 0개면 통과시킨다 — 안 그러면 도구가 통째로 벽돌이 된다."""
+    """프로파일이 0개면 통과시킨다 — 안 그러면 도구가 통째로 벽돌이 된다.
+
+    경고는 **stderr** 로 나간다. `knowledge --json` 이 이 함수를 거치므로
+    stdout 에 한 줄이라도 붙으면 기계가 읽는 JSON 이 깨진다 (rc 는 0 인 채로).
+    """
     cfg = _cfg(tmp_path, [])
     validate_game(cfg, "아무거나")       # 예외 없음
-    out = capsys.readouterr().out
-    assert "검증" in out                # 건너뛴 사실이 화면에 남는다
+    cap = capsys.readouterr()
+    assert "검증" in cap.err            # 건너뛴 사실이 화면에 남는다
+    assert cap.out == ""                # 그러나 기계가 읽는 채널은 건드리지 않는다
 
 
 def test_missing_profiles_dir_also_skips(tmp_path, capsys):
     cfg = AppConfig(knowledge_root=str(tmp_path / "k"),
                     profiles_dir=str(tmp_path / "없는폴더"))
     validate_game(cfg, "아무거나")
-    assert "검증" in capsys.readouterr().out
+    cap = capsys.readouterr()
+    assert "검증" in cap.err
+    assert cap.out == ""
