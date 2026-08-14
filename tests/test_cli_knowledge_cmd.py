@@ -195,6 +195,13 @@ def test_locked_db_says_another_qatc_process_is_running(cfg_env, capsys, monkeyp
     를 지워도 초록이었는데, sqlite 는 `SQLITE_BUSY` 를 같은 `OperationalError`
     로 던지므로 그 갈래가 빠지면 Minor 13 이 고친 "다음 조치 없는 오류" 가
     그대로 되살아난다.
+
+    **`table-locked` 를 중복으로 보고 지우지 말 것.** `locked` 와 같은 갈래를
+    타는 것은 맞지만, 판정이 **부분문자열이 아니라 등호**로 바뀌는 변이
+    (`"locked" in msg` → `msg == "database is locked"`) 를 스위트에서 유일하게
+    잡는 파라미터다 (실측: 그 변이의 실패 1건이 바로 이것). sqlite 의 잠금
+    문구는 `database table is locked: <표>` 처럼 표 이름을 달고 오는 형태가
+    실제로 있어서, 등호 판정은 그 경우를 통째로 놓친다.
     """
     import qatc.cli_knowledge as ck
 
@@ -209,11 +216,20 @@ def test_locked_db_says_another_qatc_process_is_running(cfg_env, capsys, monkeyp
 @pytest.mark.parametrize("message, locked", [
     ("database is locked", True),
     ("database is busy", True),
+    ("Database Is Locked", True),
     ("no such table: slots", False),
     ("attempt to write a readonly database", False),
-], ids=["locked", "busy", "no-such-table", "readonly"])
+], ids=["locked", "busy", "mixed-case", "no-such-table", "readonly"])
 def test_lock_classifier_separates_lock_from_other_db_errors(message, locked):
-    """분류기 자체를 직접 고정한다 — CLI 배선과 판정 규칙을 따로 봉인한다."""
+    """분류기 자체를 직접 고정한다 — CLI 배선과 판정 규칙을 따로 봉인한다.
+
+    `mixed-case` 가 `is_locked_error` 의 `str(exc).lower()` 를 봉인한다. 나머지
+    파라미터가 전부 소문자라 `.lower()` 를 지워도 스위트 전체가 초록이었다
+    (실측: 실패 0건). sqlite 자신은 소문자로 던지지만 이 함수가 받는 것은 어느
+    층에서든 다시 감싸지고 다시 포매팅될 수 있는 `OperationalError` 라,
+    대소문자에 기대는 판정은 조용히 빗나간다 — 그러면 잠금이 Minor 13 이전의
+    "다음 조치가 없는 오류" 로 되돌아간다.
+    """
     assert is_locked_error(sqlite3.OperationalError(message)) is locked
 
 
@@ -317,6 +333,11 @@ def test_export_default_filename_survives_a_backslash_in_the_content_name(cfg_en
 
     assert path.exists()
     assert path.parent == cfg_env
+    # 파일명 자체도 본다. `parent` 비교만으로는 **Windows 에서만** 판별이
+    # 된다 — POSIX 에서 역슬래시는 평범한 글자라 정화를 지워도 상위 폴더가
+    # 그대로여서 통과한다. 이 프로젝트는 Windows 전용이지만, 테스트가 어디서
+    # 도는지에 따라 판별력이 사라지는 것은 그 자체로 결함이다.
+    assert "\\" not in path.name
     assert [d for d in cfg_env.iterdir() if d.is_dir()] == []
 
 
@@ -414,6 +435,43 @@ def test_broken_config_is_a_visible_error_and_is_not_overwritten(real_config, ca
     assert "읽을 수 없습니다" in out
     assert "지우면" in out                       # 다음 조치
     assert real_config.read_text(encoding="utf-8") == broken, "깨진 설정이 덮어써졌다"
+
+
+@pytest.mark.parametrize("body, kind", [
+    ("[]", "list"),
+    ("42", "int"),
+    ('"x"', "str"),
+    ("null", "NoneType"),
+], ids=["list", "int", "string", "null"])
+def test_config_whose_top_level_is_not_an_object_stops_and_is_not_overwritten(
+    real_config, capsys, body, kind,
+):
+    """문법은 맞지만 **최상위가 객체가 아닌** 설정도 소리 내어 멈춰야 한다 (C2).
+
+    위아래 두 테스트는 둘 다 문법이 깨진 JSON 을 먹이므로 `AppConfig.load()` 의
+    `JSONDecodeError` 갈래만 지난다. `isinstance(raw, dict)` 갈래는 한 번도
+    실행되지 않아, 그 `raise SystemExit` 을 `return cls()` 로 바꿔도 전체
+    스위트가 초록이었다 (실측).
+
+    이 갈래가 조용해지면 피해는 문법 오류 때와 똑같다 — `knowledge_root` 가
+    말없이 저장소 기본값으로 돌아가고, 그 기본값이 사용자 파일을 덮어쓴다.
+    그리고 이건 억지 입력이 아니다: README 는 이 파일을 손으로 고치라고
+    안내하는데, 바깥 중괄호를 지우거나 예시 목록을 통째로 붙여 넣으면 문법은
+    멀쩡한 채 최상위만 `list`·`int`·`str`·`null` 이 된다.
+
+    타입 이름까지 고정한다 — "무엇이 잘못됐는가" 가 빠지면 사용자는 문법 오류와
+    구분할 수 없어 어디를 고쳐야 할지 모른다.
+    """
+    real_config.parent.mkdir(parents=True, exist_ok=True)
+    real_config.write_text(body, encoding="utf-8")
+
+    assert main(["config"]) == 1
+    out = capsys.readouterr().out
+    assert str(real_config) in out              # 어느 파일인지
+    assert "읽을 수 없습니다" in out
+    assert kind in out                          # 무엇이 잘못됐는지
+    assert "지우면" in out                       # 다음 조치
+    assert real_config.read_text(encoding="utf-8") == body, "깨진 설정이 덮어써졌다"
 
 
 def test_broken_config_stops_every_command_not_just_config(real_config, capsys):
