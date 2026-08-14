@@ -941,3 +941,158 @@ git commit -m "문서를 --game 검증·기본 게임에 맞춘다"
 - Excel 이 연 xlsx 에 `qatc export` → rc=1, "Excel에서 이 파일을 닫고" 안내
 - `git status --porcelain` 비어 있음
 - 뮤테이션 22종 전부 검출
+
+---
+
+### Task 7: 남은 원시 파일 쓰기 지점을 막는다
+
+> **추가된 태스크.** Task 5 구현자의 조사에서 나왔다. 저장소 전체를 훑어 원시 파일 쓰기
+> 지점이 셋뿐임을 확인했고, Task 5 가 그중 하나(`wb.save`)만 고쳤다. 나머지 둘 중 하나는
+> **이 계획이 Task 3 에서 새로 만든 경로**다 — 같은 결함을 고치는 계획이 같은 결함을
+> 새로 심었다.
+
+**Files:**
+- Modify: `qatc/config.py` (`AppConfig.save`)
+- Modify: `qatc/export/tc_excel.py` (`export_tc_excel` 의 `path.parent.mkdir`)
+- Modify: `tests/test_config.py`
+- Modify: `tests/test_tc_excel.py`
+
+**Interfaces:**
+- Consumes: `ExportBlocked` (Task 5, `qatc.export.tc_excel`)
+- Produces: 동작 변경 없음. 실패할 때 나오는 문구만 바뀐다.
+
+**실측 (고치기 전):**
+
+```
+qatc config --game starrail        (config.json 이 잠긴 상태)
+→ 오류: PermissionError: [Errno 13] Permission denied: '...\qatc\config.json'
+   rc=1
+```
+
+**각 모듈의 기존 관용구를 따를 것 — 새 예외 계층을 만들지 말 것.**
+
+- `qatc/config.py` 는 이미 `load()` 에서 `SystemExit("<한국어 문장>")` 을 던진다. `save()` 도
+  같게 한다. `main()` 이 문자열 코드를 `오류: <문장>` + rc=1 로 바꾼다.
+- `qatc/export/tc_excel.py` 는 이미 `ExportBlocked` 를 가진다. `mkdir` 실패도 그것으로 던진다.
+
+- [ ] **Step 1: 실패하는 테스트 작성**
+
+`tests/test_config.py` 에 추가한다:
+
+```python
+def test_save_on_a_locked_config_says_what_to_do(tmp_path, monkeypatch):
+    """설정 파일이 잠겼을 때 파이썬 예외 이름이 아니라 사람 말이 나와야 한다.
+
+    실측: config.json 이 잠긴 상태에서 `qatc config --game starrail` 이
+    `오류: PermissionError: [Errno 13] Permission denied: ...` 로 죽었다.
+    Task 5 가 xlsx 에 대해 고친 것과 같은 결함이고, 이 경로는 Task 3 이
+    새로 만든 것이다. 편집기로 열어두거나 클라우드 동기화가 잠그면 실제로 난다.
+    """
+    import os
+    import stat
+
+    import pytest
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    cfg = AppConfig(knowledge_root=str(tmp_path / "k"), profiles_dir=str(tmp_path / "p"))
+    cfg.save()
+    target = AppConfig.config_file()
+    os.chmod(target, stat.S_IREAD)
+    try:
+        with pytest.raises(SystemExit) as e:
+            cfg.default_game = "starrail"
+            cfg.save()
+        msg = str(e.value)
+        assert str(target) in msg                 # 어느 파일인지
+        assert "닫" in msg or "권한" in msg        # 다음 조치
+        assert "PermissionError" not in msg       # 예외 이름을 노출하지 않는다
+    finally:
+        os.chmod(target, stat.S_IWRITE)
+```
+
+`tests/test_tc_excel.py` 에 추가한다:
+
+```python
+def test_locked_output_directory_also_raises_export_blocked(tmp_path):
+    """출력 **디렉터리** 가 쓰기 불가일 때도 같은 안내가 나와야 한다.
+
+    `wb.save` 는 Task 5 에서 막혔지만 `path.parent.mkdir` 이 try 밖에 있었다.
+    """
+    import os
+    import stat
+
+    import pytest
+
+    from qatc.export.tc_excel import ExportBlocked, export_tc_excel
+
+    parent = tmp_path / "잠긴폴더"
+    parent.mkdir()
+    os.chmod(parent, stat.S_IREAD)
+    try:
+        with pytest.raises(ExportBlocked) as e:
+            export_tc_excel("컨텐츠", [], [], parent / "하위" / "out.xlsx")
+        assert "PermissionError" not in str(e.value)
+    except AssertionError:
+        raise
+    finally:
+        os.chmod(parent, stat.S_IWRITE)
+```
+
+> **주의.** Windows 에서 디렉터리의 `S_IREAD` 는 파일만큼 확실히 쓰기를 막지 않는다.
+> 이 테스트가 환경에서 실제로 `PermissionError` 를 내지 못하면 **테스트를 억지로
+> 통과시키지 말고 보고할 것** — 그때는 `mkdir` 을 try 안으로 옮기는 것만 하고
+> 테스트는 `wb.save` 경로로 대체한다.
+
+- [ ] **Step 2: 실패 확인**
+
+Run: `.venv\Scripts\python.exe -m pytest tests/test_config.py tests/test_tc_excel.py -v`
+Expected: FAIL — 날 `PermissionError` 가 그대로 올라온다
+
+- [ ] **Step 3: `AppConfig.save` 를 감싼다**
+
+`qatc/config.py` 의 `save()` 본문을 바꾼다:
+
+```python
+    def save(self) -> Path:
+        f = self.config_file()
+        d = {
+            "knowledge_root": self.knowledge_root,
+            "profiles_dir": self.profiles_dir,
+            "default_game": self.default_game,
+        }
+        try:
+            f.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        except PermissionError as exc:
+            raise SystemExit(
+                f"설정 파일에 쓸 수 없습니다 — {f}. "
+                f"다른 프로그램이 열고 있으면 닫고, 파일 권한을 확인한 뒤 다시 시도하세요."
+            ) from exc
+        return f
+```
+
+- [ ] **Step 4: `mkdir` 을 try 안으로 옮긴다**
+
+`qatc/export/tc_excel.py` 의 `export_tc_excel` 에서 `path.parent.mkdir(...)` 을 기존
+`try:` 블록 안으로 옮기고, `except PermissionError` 가 둘 다 받게 한다. 메시지는
+`wb.save` 쪽과 같은 문장을 쓴다 — 사용자에게는 같은 상황이다.
+
+- [ ] **Step 5: 통과 확인**
+
+Run: `.venv\Scripts\python.exe -m pytest`
+Expected: 380 + 2 = 382 passed
+
+- [ ] **Step 6: 뮤테이션 검증**
+
+| # | 뮤테이션 | 죽어야 하는 테스트 |
+|---|---|---|
+| M23 | `save()` 의 `except PermissionError` 블록 삭제 | `test_save_on_a_locked_config_says_what_to_do` |
+| M24 | 메시지에서 `{f}` 를 `설정 파일` 로 | 위와 동일 |
+| M25 | 메시지에서 다음 조치 문장 삭제 | 위와 동일 |
+| M26 | `mkdir` 을 다시 try 밖으로 | `test_locked_output_directory_also_raises_export_blocked` |
+
+- [ ] **Step 7: 커밋**
+
+```bash
+git add qatc/config.py qatc/export/tc_excel.py tests/test_config.py tests/test_tc_excel.py
+git commit -m "남은 원시 파일 쓰기 지점 두 곳을 사람 말로 감싼다"
+```
