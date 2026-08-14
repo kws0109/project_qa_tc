@@ -290,6 +290,23 @@ class KnowledgeStore:
         sql += " ORDER BY rowid"
         return [TestCase.from_row(json.loads(r["row"])) for r in self._db().execute(sql, args)]
 
+    def testcase_meta(self, content: str) -> dict[str, tuple[list[str], str]]:
+        """이 컨텐츠 TC 들의 `(slot_keys, generated_hash)` 를 id 로 찾는 표.
+
+        두 열을 **한 쿼리로** 가져온다. 앱의 오른쪽 패널이 TC 마다
+        "왜 존재하는가"(근거 슬롯)와 "사람이 고쳤는가"(해시 비교)를 둘 다
+        보여주는데, TC 당 DB 를 다시 여는 구현은 받아들이지 않는다.
+
+        `slot_keys` 는 `add_testcase` 가 저장해 온 열인데 지금껏 읽는 코드가
+        없었다 — 선행 리뷰가 "테스트 전용 아니냐"고 지적한 자리이고,
+        이 앱이 첫 소비자다.
+        """
+        rows = self._db().execute(
+            "SELECT id, slot_keys, generated_hash FROM testcases WHERE content = ?",
+            (content,),
+        ).fetchall()
+        return {r["id"]: (json.loads(r["slot_keys"]), r["generated_hash"]) for r in rows}
+
     def replace_generated(
         self,
         content: str,
