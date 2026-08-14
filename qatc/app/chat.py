@@ -51,24 +51,81 @@ class ChatEvent:
     data: dict
 
 
-# --- 세션 id ----------------------------------------------------------------
+# --- 세션 id ------------------------------------------------------------------
+#
+# 실측(라이브 스모크 테스트): 진짜 `claude` 는 `--session-id <uuid>` 를
+# create-only 로 다룬다 — 이미 그 id 로 대화를 연 적이 있으면 "Error: Session
+# ID <uuid> is already in use." 로 거부한다. 기존 대화를 이으려면 `--resume
+# <uuid>` 를 써야 한다. 그래서 컨텐츠별로 "이 id 로 생성을 이미 시도했는가"를
+# `knowledge_root/sessions.json` 에 함께 저장해 두고, 첫 턴은 `--session-id`,
+# 그 다음 턴부터는 `--resume` 을 고른다.
+
+
+@dataclass(frozen=True)
+class SessionRef:
+    """컨텐츠 하나의 세션 상태.
+
+    `resume` 이 거짓이면 이 `id` 로 아직 세션을 생성한 적이 없다(이번이 첫
+    턴) — `--session-id` 를 써야 한다. 참이면 이미 한 번 생성을 시도했다 —
+    `--resume` 으로 이어가야 한다.
+    """
+
+    id: str
+    resume: bool
 
 
 def session_id_for(cfg: AppConfig, content: str | None) -> str:
-    """컨텐츠별 세션 id. `knowledge_root/sessions.json` 에 영속된다.
+    """컨텐츠별 세션 id 만 필요할 때 쓴다. 생성/재개 구분은 `session_ref_for`."""
+    return session_ref_for(cfg, content).id
+
+
+def session_ref_for(cfg: AppConfig, content: str | None) -> SessionRef:
+    """컨텐츠별 세션 상태. `knowledge_root/sessions.json` 에 영속된다.
 
     컨텐츠를 아직 고르지 않은 대화(`content=None`)도 이어져야 하므로, 실제
-    컨텐츠 이름과 겹치지 않는 별도 키(`__default__`)를 쓴다.
+    컨텐츠 이름과 겹치지 않는 별도 키(`__default__`)를 쓴다 — 그 대화의 첫
+    턴도 나머지와 똑같이 "아직 생성 안 됨" 으로 시작해 `--session-id` 를
+    받는다.
     """
     key = content if content is not None else _DEFAULT_SESSION_KEY
     path = _sessions_path(cfg)
     sessions = _load_sessions(path)
-    if key in sessions:
-        return sessions[key]
+    entry = _normalize_entry(sessions.get(key))
+    if entry is not None:
+        return SessionRef(entry["id"], resume=entry["created"])
     new_id = str(uuid.uuid4())
-    sessions[key] = new_id
+    sessions[key] = {"id": new_id, "created": False}
     _save_sessions(path, sessions)
-    return new_id
+    return SessionRef(new_id, resume=False)
+
+
+def _mark_session_created(cfg: AppConfig, content: str | None, session_id: str) -> None:
+    """`session_id` 로 세션 생성을 시도했다고 기록한다 — 다음 턴부터 `--resume`.
+
+    턴이 실제로 성공했는지는 보지 않고 시도 자체를 기록한다. 앱이 죽거나
+    `claude` 실행 파일이 없어 시도가 곧바로 실패해도, 이후 재시도는 아래
+    `_attempt_turn` 의 복구 경로(알 수 없는 세션이면 새로 만든다)를 타므로
+    컨텐츠가 영영 막히지는 않는다.
+    """
+    key = content if content is not None else _DEFAULT_SESSION_KEY
+    path = _sessions_path(cfg)
+    sessions = _load_sessions(path)
+    sessions[key] = {"id": session_id, "created": True}
+    _save_sessions(path, sessions)
+
+
+def _normalize_entry(entry: object) -> dict | None:
+    """`sessions.json` 항목 하나를 `{"id": str, "created": bool}` 로 정규화한다.
+
+    옛 형식(문자열 하나뿐)도 받아들인다 — 그 id 는 이미 최소 한 번은
+    `--session-id` 로 쓰였을 것이므로 `created=True` 로 본다(재개 시도).
+    형식을 알아볼 수 없으면 `None` — 호출자가 새로 만든다.
+    """
+    if isinstance(entry, str):
+        return {"id": entry, "created": True}
+    if isinstance(entry, dict) and isinstance(entry.get("id"), str):
+        return {"id": entry["id"], "created": bool(entry.get("created", False))}
+    return None
 
 
 def _sessions_path(cfg: AppConfig) -> Path:
@@ -101,14 +158,82 @@ def stream_turn(
 ) -> Iterator[ChatEvent]:
     """`claude` 자식 프로세스로 한 턴을 보내고, 출력을 `ChatEvent` 로 바꿔 흘려보낸다.
 
+    첫 턴은 `--session-id` 로 세션을 만들고, 그 다음 턴부터는 `--resume` 으로
+    이어간다(둘 다 같은 id) — `session_ref_for` 참고.
+
+    **복구.** `sessions.json` 은 "생성을 시도했다" 만 기억하지, 그 id 를 진짜
+    `claude` 가 여전히 알고 있는지는 보장하지 않는다 — 사용자가 `~/.claude`
+    상태를 지웠거나 세션이 오래돼 사라졌을 수 있다. 그런 경우 `--resume` 은
+    (다른 자식 프로세스 인자 문제들과 같은 모양으로) delta/tool 하나 없이
+    곧바로 죽는다. 그 자리에서 새 세션 id 로 딱 한 번 다시 시도한다 — 그냥
+    포기하면 그 컨텐츠는 다시는 대화할 수 없는 상태로 영영 막히기 때문이다.
+    이미 델타/도구 호출이 나온 뒤라면(즉 재개 자체는 성공했고 그 이후에
+    죽은 것이라면) 다시 시도하지 않는다 — 이미 보여준 내용과 겹치는 새
+    응답을 만드는 게 더 헷갈린다.
+    """
+    ref = session_ref_for(cfg, content)
+    if not ref.resume:
+        _mark_session_created(cfg, content, ref.id)
+
+    emitted_real = False
+    unsettled_error: ChatEvent | None = None
+    for ev, unsettled in _attempt_turn(cfg, message, ref.id, ref.resume, claude):
+        if ev.kind in ("delta", "tool"):
+            emitted_real = True
+        if unsettled and ref.resume and not emitted_real:
+            # `unsettled` 는 그 시도의 마지막 이벤트에만 붙는다(`_attempt_turn`
+            # 의 `finally` 가 만든 것) — 사용자에게 곧바로 내지 않고 들고
+            # 있다가 아래에서 복구할지 그대로 낼지 정한다. 여기서 `return` 으로
+            # 이 반복을 바로 끊으면 `_attempt_turn` 이 아직 `finally` 안에
+            # 있는 채로 `GeneratorExit` 를 맞아 강제 종료된다 — 자기 `settled`
+            # 판단을 끝내지 못한 채 죽으므로 `RuntimeError: generator ignored
+            # GeneratorExit` 로 번진다(실측: 이 변경 직후 테스트 스위트에서
+            # 재현됨). `continue` 로 반복을 이어가 `_attempt_turn` 이 스스로
+            # 끝맺게(다음 `next()` 에서 `StopIteration`) 둬야 한다.
+            unsettled_error = ev
+            continue
+        yield ev
+
+    if unsettled_error is None:
+        return
+
+    reason = unsettled_error.data.get("message", "")
+    _p(
+        "이어가려던 세션을 찾을 수 없어 새 세션으로 다시 시작합니다"
+        + (f" (원인: {reason})" if reason else ""),
+        err=True,
+    )
+    new_id = str(uuid.uuid4())
+    _mark_session_created(cfg, content, new_id)
+    for retry_ev, _retry_unsettled in _attempt_turn(cfg, message, new_id, False, claude):
+        yield retry_ev
+
+
+def _attempt_turn(
+    cfg: AppConfig,
+    message: str,
+    session_id: str,
+    resume: bool,
+    claude: str | list[str] | None,
+) -> Iterator[tuple[ChatEvent, bool]]:
+    """`claude` 자식 프로세스 한 번 실행. `(ChatEvent, unsettled)` 를 흘려보낸다.
+
+    `unsettled` 는 done/error 프레임 하나 없이 스트림이 끝나 `stream_turn`
+    이 스스로 만들어 낸 마지막 오류 이벤트에서만 참이다 — 그 값 자체는
+    `ChatEvent.data` 에 넣지 않는다(프런트로 나가는 페이로드 모양을 이
+    복구 판단 때문에 바꾸고 싶지 않다). `stream_turn` 은 이 표시로 "세션을
+    못 찾아 곧바로 죽었을 가능성" 과 "정상적인 API/인증 오류"(둘 다 성공한
+    JSON `result` 프레임으로 오므로 `unsettled=False`)를 구분해 후자는
+    재시도하지 않는다.
+
     `cwd=project_root()` 로 고정한다 — `.claude/settings.json` 의 Bash
     allowlist 는 그 디렉터리 기준으로 매칭되고, 헤드리스 실행에는 권한 승인
     창에 답할 UI 가 없으므로 allowlist 가 빗나가면 턴이 조용히 멈춘다.
     """
-    session_id = session_id_for(cfg, content)
+    session_flag = ["--resume", session_id] if resume else ["--session-id", session_id]
     cmd = _base_cmd(claude) + [
         "-p",
-        "--session-id", session_id,
+        *session_flag,
         "--output-format", "stream-json",
         "--input-format", "stream-json",
         # 실측(라이브 스모크 테스트, 테스트가 아니라 진짜 `claude` 실행 파일로
@@ -162,7 +287,7 @@ def stream_turn(
                 _p(f"claude 출력 중 JSON 이 아닌 줄을 건너뜁니다: {line!r}", err=True)
                 continue
             for ev in _events_from(obj):
-                yield ev
+                yield ev, False
                 if ev.kind in ("done", "error"):
                     settled = True
                     return
@@ -184,7 +309,7 @@ def stream_turn(
             yield ChatEvent("error", {
                 "kind": "error",
                 "message": _unsettled_error_msg(detail),
-            })
+            }), True
 
 
 def _child_env() -> dict:

@@ -340,3 +340,172 @@ def test_unknown_system_frames_before_the_turn_are_ignored(cfg, tmp_path):
         tmp_path, REALISTIC_OPENING_LINES)))
     assert [e.kind for e in evs] == ["delta", "tool", "done"]
     assert "".join(e.data["text"] for e in evs if e.kind == "delta") == "안녕"
+
+
+# --- `--session-id` 는 create-only — 첫 턴은 생성, 다음 턴부터는 재개 ------
+#
+# 라이브 스모크 테스트가 잡은 결함: `session_id_for` 가 컨텐츠당 uuid 하나를
+# 영속시키고, `stream_turn` 은 매 턴 그 값을 그대로 `--session-id` 로
+# 넘겼다. 진짜 `claude` 는 `--session-id` 를 생성 전용으로 다뤄서, 이미 그
+# id 로 연 적이 있으면 다음 턴에서 "Error: Session ID ... is already in
+# use." 로 거부한다(실측) — 인터뷰가 여러 턴 이어져야 한다는 이 앱의 전제를
+# 정면으로 깬다. 가짜 `claude` 는 이 create-vs-resume 구분을 전혀 흉내 내지
+# 않으므로 기존 스위트는 이 결함을 못 잡았다.
+
+
+def test_first_turn_for_a_content_uses_session_id_not_resume(cfg, tmp_path):
+    """컨텐츠의 첫 턴은 `--session-id` 로 세션을 만들어야 한다(`--resume` 아님)."""
+    record = tmp_path / "record.json"
+    evs = list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=record)))
+    assert evs
+    argv = json.loads(record.read_text(encoding="utf-8"))["argv"]
+    assert "--session-id" in argv
+    assert "--resume" not in argv
+
+
+def test_second_turn_for_the_same_content_resumes_with_the_same_id(cfg, tmp_path):
+    """같은 컨텐츠의 둘째 턴부터는 `--resume` 을 **같은** id 로 써야 한다.
+
+    라이브 스모크 테스트가 실제로 재현한 실패 모양: 매 턴 `--session-id` 를
+    다시 주면 진짜 `claude` 는 "이미 쓰이고 있다" 며 거부한다 — 두 번째
+    턴부터 대화가 절대 못 이어진다는 뜻이다.
+    """
+    record1 = tmp_path / "record1.json"
+    list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=record1)))
+    argv1 = json.loads(record1.read_text(encoding="utf-8"))["argv"]
+    created_id = argv1[argv1.index("--session-id") + 1]
+
+    record2 = tmp_path / "record2.json"
+    evs = list(stream_turn(cfg, "y", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=record2)))
+    assert evs
+    argv2 = json.loads(record2.read_text(encoding="utf-8"))["argv"]
+    assert "--session-id" not in argv2
+    assert argv2[argv2.index("--resume") + 1] == created_id
+
+
+def test_a_known_content_still_resumes_after_a_restart(cfg, tmp_path):
+    """앱을 껐다 켜도(새 객체, 같은 `sessions.json`) 시작된 대화는 재개돼야 한다.
+
+    "생성됨" 여부가 메모리가 아니라 파일에 저장되는지 확인한다 — 메모리에만
+    있었다면 재시작한 프로세스는 이 컨텐츠를 처음 보는 줄 알고 다시
+    `--session-id` 를 시도해 똑같은 "이미 쓰이고 있다" 오류로 죽는다.
+    """
+    record1 = tmp_path / "record1.json"
+    list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=record1)))
+    created_id = session_id_for(cfg, "파티편성")
+
+    # 새 프로세스를 흉내 낸다 — 같은 경로를 가리키는 새 `AppConfig` 객체.
+    # `chat.py` 는 세션 상태를 메모리에 캐시하지 않고 매번 파일을 다시
+    # 읽으므로, 이 객체가 "이전 실행"의 어떤 상태도 물려받지 않는다는 점이
+    # 검사의 핵심이다.
+    restarted_cfg = AppConfig(knowledge_root=cfg.knowledge_root, profiles_dir=cfg.profiles_dir)
+    record2 = tmp_path / "record2.json"
+    evs = list(stream_turn(restarted_cfg, "y", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=record2)))
+    assert evs
+    argv2 = json.loads(record2.read_text(encoding="utf-8"))["argv"]
+    assert "--session-id" not in argv2
+    assert argv2[argv2.index("--resume") + 1] == created_id
+
+
+def test_no_content_chosen_yet_follows_the_same_create_then_resume_path(cfg, tmp_path):
+    """`content=None`("아직 컨텐츠 안 고름") 의 첫 턴도 일반 컨텐츠와 같은 규칙을 따른다.
+
+    내부적으로 다른 키(`__default__`)를 쓸 뿐, 생성→재개 판정 자체는 별도
+    분기 없이 같은 코드를 탄다는 것을 고정한다.
+    """
+    record1 = tmp_path / "record1.json"
+    list(stream_turn(cfg, "x", None, claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=record1)))
+    argv1 = json.loads(record1.read_text(encoding="utf-8"))["argv"]
+    assert "--session-id" in argv1
+    assert "--resume" not in argv1
+    created_id = argv1[argv1.index("--session-id") + 1]
+
+    record2 = tmp_path / "record2.json"
+    list(stream_turn(cfg, "y", None, claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=record2)))
+    argv2 = json.loads(record2.read_text(encoding="utf-8"))["argv"]
+    assert "--session-id" not in argv2
+    assert argv2[argv2.index("--resume") + 1] == created_id
+
+
+# --- `sessions.json` 이 있다고 진짜 `claude` 도 그 세션을 안다는 보장은 없다 -
+#
+# 사용자가 `~/.claude` 상태를 지웠거나 세션이 오래돼 사라졌으면, `--resume`
+# 은 실측된 "이미 쓰이고 있다" 오류와 같은 모양(정상 JSON 프레임 하나 없이
+# stderr 문구만 남기고 곧바로 종료)으로 죽을 것으로 본다 — 둘 다 "그 세션
+# id 를 claude 가 지금 받아들이지 않는다" 는 같은 종류의 인자 단계 거부이기
+# 때문이다. 이 가정을 실측으로 검증하지는 않았다(따로 값을 태워야 해서
+# 라이브 런의 예산 밖). 그 자리에서 그냥 포기하면 그 컨텐츠는 다시는 대화할
+# 수 없는 상태로 영영 막힌다 — 그래서 새 세션 id 로 딱 한 번 다시 시도한다.
+
+
+def _fake_claude_session_aware(tmp_path, *, ok_lines, resume_stderr, resume_record, create_record):
+    """`--resume` 이면 즉시 실패(빈 stdout, stderr 만), `--session-id` 면 성공.
+
+    어느 쪽으로 불렸는지에 따라 argv 를 다른 파일에 기록해, 복구가 실제로
+    새 세션으로(즉 `--session-id` 로) 재시도했는지 구분해서 검사할 수 있게
+    한다.
+    """
+    script = tmp_path / "fake_claude_session_aware.py"
+    script.write_text(textwrap.dedent(f"""
+        import json
+        import os
+        import sys
+
+        argv = sys.argv
+        resumed = "--resume" in argv
+        record_path = {str(resume_record)!r} if resumed else {str(create_record)!r}
+        with open(record_path, "w", encoding="utf-8") as f:
+            json.dump({{"argv": argv, "cwd": os.getcwd()}}, f, ensure_ascii=False)
+
+        if resumed:
+            sys.stderr.write({resume_stderr!r})
+            sys.stderr.flush()
+            sys.exit(1)
+
+        for line in {ok_lines!r}:
+            sys.stdout.write(line + "\\n")
+            sys.stdout.flush()
+        sys.exit(0)
+    """), encoding="utf-8")
+    return [sys.executable, str(script)]
+
+
+def test_unknown_resume_target_recovers_with_a_fresh_session(cfg, tmp_path):
+    """`--resume` 대상이 사라졌으면, 새 세션으로 한 번 다시 시도해 턴을 살린다.
+
+    그렇지 않으면 이 컨텐츠는 사용자가 다시는 대화할 수 없는 상태로 영영
+    막힌다 — 세션 하나 잃는 것보다 훨씬 나쁘다.
+    """
+    list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=tmp_path / "record0.json")))
+    stale_id = session_id_for(cfg, "파티편성")
+
+    resume_record = tmp_path / "resume_record.json"
+    create_record = tmp_path / "create_record.json"
+    claude_cmd = _fake_claude_session_aware(
+        tmp_path, ok_lines=OK_LINES,
+        resume_stderr=f"Error: No conversation found with session ID: {stale_id}",
+        resume_record=resume_record, create_record=create_record)
+
+    evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
+
+    # 사용자에게는 실패한 재개 시도가 전혀 안 보이고, 재시도의 결과만
+    # 정상적인 턴 모양(OK_LINES)으로 도착해야 한다.
+    assert [e.kind for e in evs] == ["delta", "tool", "done"]
+
+    resume_argv = json.loads(resume_record.read_text(encoding="utf-8"))["argv"]
+    assert resume_argv[resume_argv.index("--resume") + 1] == stale_id
+
+    create_argv = json.loads(create_record.read_text(encoding="utf-8"))["argv"]
+    new_id = create_argv[create_argv.index("--session-id") + 1]
+    assert new_id != stale_id
+
+    # 다음 턴은 이 새 id 를 재개해야 한다 — 낡은 id 로 되돌아가면 다시 막힌다.
+    assert session_id_for(cfg, "파티편성") == new_id
