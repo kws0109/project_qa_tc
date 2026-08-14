@@ -484,3 +484,49 @@ def test_init_still_accepts_short_and_unusual_but_real_names(cfg_env, capsys):
     assert main(["knowledge", "--game", "starrail", "--json"]) == 0
     contents = {c["content"] for c in json.loads(capsys.readouterr().out)["contents"]}
     assert contents == {"1", "워프", "A/B 테스트", "v2"}
+
+
+# --- --game 검증과 기본값 (T4) --------------------------------------------
+
+
+def test_slot_init_rejects_an_unregistered_game(cfg_env, capsys):
+    rc = main(["slot", "init", "테스트", "--game", "starrial"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "starrial" in out and "starrail" in out
+    assert not list((cfg_env / "starrial.db").parent.glob("starrial.db")), \
+        "거부했는데 DB 가 생겼다"
+
+
+def test_slot_init_uses_the_default_game_when_flag_is_omitted(cfg_env, capsys):
+    assert main(["config", "--game", "starrail"]) == 0
+    capsys.readouterr()
+    assert main(["slot", "init", "파티편성"]) == 0
+    capsys.readouterr()
+    assert (cfg_env / "starrail.db").exists()
+
+
+def test_explicit_game_wins_over_the_default(cfg_env, capsys):
+    assert main(["config", "--game", "starrail"]) == 0
+    capsys.readouterr()
+    assert main(["slot", "init", "상점", "--game", "genshin"]) == 0
+    capsys.readouterr()
+    assert (cfg_env / "genshin.db").exists()
+    assert not (cfg_env / "starrail.db").exists()
+
+
+def test_slot_init_without_game_or_default_says_what_to_do(cfg_env, capsys):
+    rc = main(["slot", "init", "파티편성"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "--game" in out
+    assert "config" in out           # 기본 게임을 정하는 방법도 알려준다
+
+
+def test_blank_content_is_rejected_before_the_game_is_resolved(cfg_env, capsys):
+    """이름이 비었으면 게임 얘기를 꺼내지 않는다 — 만들 게 없다."""
+    rc = main(["slot", "init", "", "--game", "starrial"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "이름이 비어" in out
+    assert "등록된 게임이 아닙니다" not in out

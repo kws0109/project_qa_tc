@@ -44,11 +44,34 @@ def test_knowledge_filled_counts_only_filled_not_unknown_or_na(cfg_env, capsys):
     assert row["total"] == 10
 
 
-def test_knowledge_on_missing_game_fails(cfg_env, capsys):
+def test_knowledge_on_unregistered_game_fails(cfg_env, capsys):
+    """T4 이후: 등록되지 않은 게임 이름은 DB 존재 여부를 보기도 전에 막힌다.
+
+    `cmd_knowledge` 가 이제 `resolve_game` 을 맨 앞에서 호출하므로, 오타 게임
+    이름은 "지식 DB가 없습니다" 가 아니라 `validate_game` 의 "등록된 게임이
+    아닙니다" 로 거부된다 — 이 태스크가 만들려는 바로 그 동작이다.
+    """
     rc = main(["knowledge", "--game", "없는게임"])
     assert rc == 1
     out = capsys.readouterr().out
     assert "없는게임" in out
+    # 계약: 오류는 다음 조치를 항상 함께 알린다 (모듈 도크스트링) — 여기서는
+    # 쓸 수 있는 게임 이름과 프로파일 위치가 그 역할을 한다.
+    assert "starrail" in out and "genshin" in out
+    assert "등록된 게임이 아닙니다" in out
+
+
+def test_knowledge_on_missing_db_for_a_registered_game_fails(cfg_env, capsys):
+    """등록은 됐지만 아직 DB가 없는 게임은 "지식 DB가 없습니다" 로 안내한다.
+
+    `resolve_game` 통과 **뒤**에 있는 이 분기는 `validate_game` 이 막지 않는다
+    — `genshin` 은 `cfg_env` 가 등록한 프로파일이지만 `slot init` 을 한 번도
+    부르지 않아 DB 파일 자체가 없다.
+    """
+    rc = main(["knowledge", "--game", "genshin"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "genshin" in out
     # 계약: 오류는 다음 조치를 항상 함께 알린다 (모듈 도크스트링)
     assert "qatc slot init" in out
 
@@ -535,3 +558,15 @@ def test_plain_config_still_does_not_write(cfg_env, capsys):
     assert main(["config"]) == 0
     capsys.readouterr()
     assert AppConfig.config_file().read_bytes() == before
+
+
+# --- --game 검증과 기본값 (T4) --------------------------------------------
+
+
+def test_knowledge_uses_the_default_game(cfg_env, capsys):
+    assert main(["config", "--game", "starrail"]) == 0
+    capsys.readouterr()
+    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    capsys.readouterr()
+    assert main(["knowledge"]) == 0
+    assert "파티편성" in capsys.readouterr().out

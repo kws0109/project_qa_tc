@@ -59,6 +59,26 @@ def resolve_store(cfg: AppConfig, game: str | None, content: str | None) -> Know
     return KnowledgeStore(hits[0]).open()
 
 
+def resolve_game(cfg: AppConfig, game: str | None) -> str:
+    """`--game` 값이나 설정의 기본 게임을 돌려준다. 둘 다 없으면 멈춘다.
+
+    :raises SystemExit: 어느 쪽도 없을 때, 또는 이름이 등록되지 않았을 때.
+
+    `resolve_store` 와 다르다 — 저쪽은 **읽기**라 컨텐츠 이름으로 DB를
+    역추적할 수 있지만, 이쪽은 **생성**이라 어느 DB에 넣을지 사람이 정해야 한다.
+    """
+    from .games import validate_game
+
+    chosen = game or cfg.default_game
+    if not chosen:
+        raise SystemExit(
+            "어느 게임인지 알 수 없습니다. --game <게임> 을 주거나, "
+            "'qatc config --game <게임>' 으로 기본 게임을 정하세요."
+        )
+    validate_game(cfg, chosen)
+    return chosen
+
+
 def _no_content(content: str) -> str:
     """"그 컨텐츠가 없다"를 알리는 문구. 다섯 명령이 같이 쓴다.
 
@@ -151,10 +171,12 @@ def cmd_slot_init(args: argparse.Namespace, cfg: AppConfig) -> int:
            "'qatc slot init <컨텐츠> --game <게임>' 처럼 이름을 지정하세요.")
         return 1
 
+    game = resolve_game(cfg, args.game)
+
     types = [t.strip() for t in (args.types or "").split(",") if t.strip()]
-    store = KnowledgeStore(cfg.knowledge_path / f"{args.game}.db").open()
+    store = KnowledgeStore(cfg.knowledge_path / f"{game}.db").open()
     try:
-        content = store.init_content(args.content, game=args.game, types=types)
+        content = store.init_content(args.content, game=game, types=types)
         n = len(store.slots(args.content))
     except ValueError as exc:
         _p(f"오류: {exc}")
@@ -476,12 +498,14 @@ def cmd_tc_list(args: argparse.Namespace, cfg: AppConfig) -> int:
 
 
 def cmd_knowledge(args: argparse.Namespace, cfg: AppConfig) -> int:
-    path = cfg.knowledge_path / f"{args.game}.db"
+    game = resolve_game(cfg, args.game)
+
+    path = cfg.knowledge_path / f"{game}.db"
     if not path.exists():
         # 조건이 다르다 (컨텐츠가 아니라 게임 DB) 라 문구를 공유하지 않지만,
         # 계약("다음 조치를 함께 알린다")은 같이 지킨다.
-        _p(f"'{args.game}' 지식 DB가 없습니다 ({path}). "
-           f"'qatc slot init <컨텐츠> --game {args.game}'을 먼저 실행하세요.")
+        _p(f"'{game}' 지식 DB가 없습니다 ({path}). "
+           f"'qatc slot init <컨텐츠> --game {game}'을 먼저 실행하세요.")
         return 1
 
     rows = []
@@ -500,10 +524,10 @@ def cmd_knowledge(args: argparse.Namespace, cfg: AppConfig) -> int:
             })
 
     if args.json:
-        _p(json.dumps({"game": args.game, "contents": rows}, ensure_ascii=False, indent=2))
+        _p(json.dumps({"game": game, "contents": rows}, ensure_ascii=False, indent=2))
         return 0
 
-    _p(f"[{args.game}] 컨텐츠 {len(rows)}개\n")
+    _p(f"[{game}] 컨텐츠 {len(rows)}개\n")
     _p(f"  {pad('컨텐츠', 14)} {pad('채움', 7, align='right')}  "
        f"{pad('계열', 7, align='right')}  {pad('TC', 4, align='right')}")
     _p(f"  {'-' * 40}")
@@ -555,7 +579,7 @@ def register(sub) -> None:
 
     it = slot_sub.add_parser("init", help="컨텐츠 슬롯 세트 생성 (재실행 시 값 보존)")
     it.add_argument("content")
-    it.add_argument("--game", "-g", required=True)
+    it.add_argument("--game", "-g")
     it.add_argument("--types", "-t", default="",
                     help=f"쉼표 구분. 사용 가능: {', '.join(KNOWN_TYPES)}")
     it.set_defaults(func=cmd_slot_init)
@@ -604,7 +628,7 @@ def register(sub) -> None:
     ls.set_defaults(func=cmd_tc_list)
 
     kn = sub.add_parser("knowledge", help="게임별 지식 커버리지")
-    kn.add_argument("--game", "-g", required=True)
+    kn.add_argument("--game", "-g")
     kn.add_argument("--json", action="store_true")
     kn.set_defaults(func=cmd_knowledge)
 
