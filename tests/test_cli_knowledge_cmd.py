@@ -789,3 +789,87 @@ def test_slot_init_still_creates_the_db_for_a_registered_game(cfg_env, capsys):
     assert main(["slot", "init", "파티편성", "--game", "genshin"]) == 0
     capsys.readouterr()
     assert (cfg_env / "genshin.db").exists()
+
+
+# --- 설계 결정 둘을 테스트로 못박는다 (최종 검토 M5 · M8) ---------------------
+#
+# 둘 다 변이 생존이었다 — 뒤집어도 스위트가 초록이라, 나중 기여자가 어느 쪽으로
+# 고쳐도 "고쳤다" 는 신호를 받는다. 결정의 **이유**는 코드 주석이 아니라
+# 실패하는 테스트가 지켜야 한다.
+
+
+def test_the_read_path_stays_unvalidated_so_data_never_gets_stranded(
+        cfg_env, capsys, tmp_path):
+    """게임이 `profiles/` 를 떠나도 그 DB 는 계속 읽힌다 (결정 #3).
+
+    `resolve_store` 의 명시-게임 분기에 `validate_game` 을 넣으면 전체 스위트가
+    그대로 초록이었다 (M5). 그러나 그 변이는 프로파일 YAML 한 장이 지워지거나
+    이름이 바뀐 순간 **그 게임에 쌓아둔 인터뷰 전부를 좌초시킨다** — 읽기도,
+    `tc plan` 도, `export` 도 막힌다. 되살릴 방법은 프로파일을 복원하는 것뿐인데,
+    사용자는 왜 막혔는지 알 방법이 없다.
+
+    그래서 생성 경로와 읽기 경로를 **같은 테스트 안에서 대조**한다. 한쪽만
+    보면 "검증이 도는가" 와 "데이터가 살아 있는가" 중 하나를 놓친다.
+    """
+    assert main(["slot", "init", "파티편성", "--game", "genshin"]) == 0
+    assert main(["slot", "set", "파티편성", "core_action",
+                 "--status", "filled", "--value", "파티를 적용한다"]) == 0
+    capsys.readouterr()
+
+    (tmp_path / "profiles" / "genshin.yaml").unlink()      # 게임이 목록을 떠났다
+
+    # 생성 경로는 이제 이 이름을 거부한다 — 검증이 실제로 돌고 있다는 대조군
+    assert main(["slot", "init", "새컨텐츠", "--game", "genshin"]) == 1
+    assert "등록된 게임이 아닙니다" in capsys.readouterr().out
+
+    # 그러나 **읽기는 그대로다.** 이 세 줄이 M5 변이를 잡는다.
+    assert main(["slot", "status", "파티편성", "--game", "genshin", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["filled"] == 1
+
+    assert main(["tc", "plan", "파티편성", "--game", "genshin", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["planned"]
+
+    assert main(["export", "파티편성", "--game", "genshin"]) == 0
+    assert "✓" in capsys.readouterr().out
+
+    # `--game` 없이 컨텐츠 이름으로 역추적하는 경로도 마찬가지
+    assert main(["slot", "status", "파티편성", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["game"] == "genshin"
+
+
+def test_a_stored_default_game_that_left_the_profiles_is_rejected(
+        cfg_env, capsys, tmp_path):
+    """저장된 기본 게임도 대조한다 (결정 #1의 나머지 절반).
+
+    `resolve_game` 에 `if game:` 가드를 넣어 **명시된 플래그만** 검증하게 해도
+    전체 스위트가 초록이었다 (M8). 기존 테스트가 전부
+    `main(["config","--game","starrail"])` 로 기본값을 넣는데 그 경로가 이미
+    검증하므로, 저장된 값은 **구성상 항상 등록된 상태**라 가드가 시험되지 않았다.
+
+    실제로는 설정 파일이 오래 살아남는다 — 프로파일 이름이 바뀌거나 파일이
+    지워지면 저장된 기본값만 남는다. 그때 검증이 꺼져 있으면 `slot init` 이
+    등록되지 않은 이름으로 **새 DB 를 만들고** rc=0 을 낸다. 그래서 여기서는
+    검증을 통과한 기본값을 저장한 **뒤에** 프로파일을 지운다.
+    """
+    assert main(["config", "--game", "genshin"]) == 0
+    capsys.readouterr()
+
+    (tmp_path / "profiles" / "genshin.yaml").unlink()
+
+    assert main(["slot", "init", "새컨텐츠", "--types", "편성"]) == 1
+    out = capsys.readouterr().out
+    assert "genshin" in out                        # 무엇이 문제인지
+    assert "등록된 게임이 아닙니다" in out
+    assert "starrail" in out                       # 무엇을 쓸 수 있는지
+    assert not (cfg_env / "genshin.db").exists(), "거부해 놓고 DB 를 만들었다"
+
+
+def test_the_stored_default_is_validated_on_knowledge_too(cfg_env, capsys, tmp_path):
+    """`knowledge` 도 같은 기본값을 쓴다 — 한 명령만 고치면 다른 쪽이 샌다."""
+    assert main(["config", "--game", "genshin"]) == 0
+    capsys.readouterr()
+
+    (tmp_path / "profiles" / "genshin.yaml").unlink()
+
+    assert main(["knowledge"]) == 1
+    assert "등록된 게임이 아닙니다" in capsys.readouterr().out
