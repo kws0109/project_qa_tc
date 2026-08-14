@@ -296,17 +296,27 @@ class KnowledgeStore:
         family: str,
         cases: Sequence[TestCase],
         slot_keys: Sequence[str],
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, int]:
         """한 계열의 생성분을 갈아끼운다. 사람 손이 닿은 것은 보존한다.
 
         보존 조건 두 가지 —
         `origin=USER` 이거나, 저장된 본문 해시가 `generated_hash` 와 다른 것.
         후자가 "사용자가 고쳤다"의 판정이다.
 
-        :returns: (추가한 수, 보존한 수)
+        **삭제 수를 함께 돌려준다.** 예전에는 `(added, kept)` 뿐이라 호출자가
+        무엇이 사라졌는지 알 방법이 없었고, `tc add` 를 같은 계열에 두 번 부르면
+        앞 배치가 `✓ … 저장` rc=0 과 함께 통째로 증발했다 (실측: 4건 → 2건,
+        출력에 삭제를 암시하는 글자가 하나도 없음). 교체는 이 메서드의 존재
+        이유이므로 막지 않는다 — 대신 **말하게** 만든다.
+
+        `(added, kept)` 순서는 CLI 가 언패킹해서 쓰는 계약이라 그대로 두고
+        삭제 수를 뒤에 붙였다.
+
+        :returns: (추가한 수, 보존한 수, 지운 수)
         """
         db = self._db()
         kept = 0
+        deleted = 0
         for r in db.execute(
             "SELECT id, generated_hash, row FROM testcases WHERE content = ? AND family = ?",
             (content, family),
@@ -317,11 +327,12 @@ class KnowledgeStore:
                 kept += 1
                 continue
             db.execute("DELETE FROM testcases WHERE id = ?", (r["id"],))
+            deleted += 1
         db.commit()
 
         for tc in cases:
             self.add_testcase(content, family, tc, slot_keys)
-        return len(cases), kept
+        return len(cases), kept, deleted
 
 
 def testcase_hash(tc: TestCase) -> str:

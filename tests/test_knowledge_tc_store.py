@@ -59,10 +59,10 @@ def test_testcases_filter_by_family(make_tc, store):
 
 def test_replace_generated_replaces_untouched_case(make_tc, store):
     store.add_testcase("파티편성", "정상 경로", make_tc(title="구버전"), ["core_action"])
-    added, kept = store.replace_generated(
+    added, kept, deleted = store.replace_generated(
         "파티편성", "정상 경로", [make_tc(title="신버전")], ["core_action"]
     )
-    assert (added, kept) == (1, 0)
+    assert (added, kept, deleted) == (1, 0, 1)
     assert [t.title for t in store.testcases("파티편성")] == ["신버전"]
 
 
@@ -72,10 +72,11 @@ def test_replace_generated_preserves_user_edited_case(make_tc, store):
     saved.title = "사람이 고침"
     store.update_testcase_row(saved)
 
-    added, kept = store.replace_generated(
+    added, kept, deleted = store.replace_generated(
         "파티편성", "정상 경로", [make_tc(title="신버전")], ["core_action"]
     )
     assert kept == 1
+    assert deleted == 0          # 보존한 것은 지운 것에 세지 않는다
     titles = {t.title for t in store.testcases("파티편성")}
     assert "사람이 고침" in titles
     assert "신버전" in titles
@@ -85,11 +86,41 @@ def test_replace_generated_preserves_user_origin_case(make_tc, store):
     store.add_testcase(
         "파티편성", "정상 경로", make_tc(title="사람이 추가", origin=TCOrigin.USER), []
     )
-    added, kept = store.replace_generated(
+    added, kept, deleted = store.replace_generated(
         "파티편성", "정상 경로", [make_tc(title="신버전")], ["core_action"]
     )
     assert kept == 1
+    assert deleted == 0
     assert "사람이 추가" in {t.title for t in store.testcases("파티편성")}
+
+
+def test_replace_generated_reports_how_many_it_deleted(make_tc, store):
+    """지운 개수가 **반환값으로 나와야** CLI 가 그 사실을 말할 수 있다 (BL2).
+
+    교체 자체는 의도된 설계다 — 이 메서드의 존재 이유가 "한 계열의 생성분을
+    갈아끼우는 것"이고, `generated_hash` 는 그 교체가 사람 손댄 TC를 건드리지
+    않게 하려고 있다. 결함은 교체가 **말없이** 일어난다는 것이었다:
+    반환이 `(added, kept)` 뿐이라 `cli_knowledge.py` 에는 삭제를 보고할 방법이
+    아예 없었고, 실측에서 TC 2건이 `✓ … 1건 저장` rc=0 과 함께 증발했다.
+    """
+    for title in ("A", "B", "C"):
+        store.add_testcase("파티편성", "정상 경로", make_tc(title=title), ["core_action"])
+    # 다른 계열은 이 호출과 무관하다 — 삭제 수에 섞이면 안 된다
+    store.add_testcase("파티편성", "경계값", make_tc(title="경계값 것"), ["constraints"])
+
+    added, kept, deleted = store.replace_generated(
+        "파티편성", "정상 경로", [make_tc(title="신규")], ["core_action"]
+    )
+    assert (added, kept, deleted) == (1, 0, 3)
+    assert {t.title for t in store.testcases("파티편성")} == {"신규", "경계값 것"}
+
+
+def test_replace_generated_reports_zero_deleted_on_first_call(make_tc, store):
+    """지운 것이 없으면 0 이어야 한다 — CLI 가 이 값으로 경고를 켠다."""
+    added, kept, deleted = store.replace_generated(
+        "파티편성", "정상 경로", [make_tc(title="첫 배치")], ["core_action"]
+    )
+    assert (added, kept, deleted) == (1, 0, 0)
 
 
 def test_replace_generated_only_touches_named_family(make_tc, store):

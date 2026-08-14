@@ -389,13 +389,22 @@ def cmd_tc_add(args: argparse.Namespace, cfg: AppConfig) -> int:
                 rationale=str(item.get("rationale", "")),
             ))
 
-        added, kept = store.replace_generated(
+        added, kept, deleted = store.replace_generated(
             args.content, args.family, cases, [plan.slot_key]
         )
     finally:
         store.close()
 
     _p(f"✓ [{args.family}] TC {added}건 저장" + (f" · 사람 손댄 {kept}건 보존" if kept else ""))
+    if deleted:
+        # 이 명령의 이름은 `add` 지만 동작은 **계열 단위 갈아끼우기**다. 그게
+        # 의도된 설계이므로 확인 절차로 막지 않는다 — 대신 소리 내어 말한다.
+        # 예전에는 이 줄이 없어서, 인터뷰 도중 같은 계열을 한 번 더 부른 모델이
+        # 앞 배치를 통째로 지우고도 `✓ … 저장` rc=0 만 보고 성공으로 읽었다.
+        _p(f"⚠ 같은 계열의 기존 TC {deleted}건을 지우고 교체했습니다 "
+           f"— 이 명령은 계열 단위 갈아끼우기입니다.")
+        _p(f"   앞 배치를 남기려면 그 TC들까지 testcases 에 함께 넣어 "
+           f"다시 실행하세요.")
     return 0
 
 

@@ -412,6 +412,75 @@ def test_add_reports_correct_added_and_kept_counts(stdin_text, ready, monkeypatc
         assert len(s.testcases("파티편성")) == 2
 
 
+def _titled(*titles):
+    """제목만 다른 유효한 TC 페이로드."""
+    return json.dumps({"testcases": [
+        {"title": t, "steps": ["절차"], "expected": ["기대"]} for t in titles
+    ]}, ensure_ascii=False)
+
+
+def test_second_add_on_same_family_says_how_many_it_replaced(stdin_text, ready, capsys):
+    """같은 계열에 `tc add` 를 두 번 부르면 **지운 개수를 소리 내어 말해야 한다** (BL2).
+
+    실측 BEFORE — 격리된 스토어에서:
+
+        1회차 → ✓ [정상 경로] TC 2건 저장   → tc list: A, B
+        2회차 → ✓ [정상 경로] TC 1건 저장   → tc list: C 뿐  (A · B 증발, 무성)
+
+    교체는 의도된 설계다 (`replace_generated` 가 존재하는 이유이고,
+    `generated_hash` 가 사람 손댄 TC를 지켜준다). 결함은 파괴적 교체가 rc=0 ·
+    성공 줄로, 무엇을 지웠는지 한 글자도 없이 끝난다는 것이다. 명령 이름은
+    `add` 이고 SKILL.md 는 "계열마다 한 번씩" 만 말하므로, 사용자가 "이것도
+    넣어주세요" 라고 해서 모델이 같은 계열을 한 번 더 부르는 순간 앞 배치가
+    통째로 날아간다.
+    """
+    stdin_text(_titled("A", "B"))
+    assert main(["tc", "add", "파티편성", "--family", "정상 경로",
+                 "--origin", "interview", "--json", "-"]) == 0
+    first = capsys.readouterr().out
+    assert "TC 2건 저장" in first
+    assert "⚠" not in first            # 지운 게 없으면 경고하지 않는다
+    assert "교체" not in first
+    assert [t.title for t in _stored(ready)] == ["A", "B"]
+
+    stdin_text(_titled("C"))
+    assert main(["tc", "add", "파티편성", "--family", "정상 경로",
+                 "--origin", "interview", "--json", "-"]) == 0
+    second = capsys.readouterr().out
+
+    assert "TC 1건 저장" in second
+    assert "⚠" in second                        # 눈에 띄어야 한다
+    assert "기존 TC 2건" in second               # 몇 건을 지웠는지 정확히
+    assert "다시 실행하세요" in second           # 다음 조치를 알린다
+    assert [t.title for t in _stored(ready)] == ["C"]
+
+
+def test_replaced_count_excludes_preserved_user_testcases(stdin_text, ready, capsys):
+    """`origin=user` 로 넣은 TC 는 보존된다 — 그건 지운 수에 세면 안 된다.
+
+    보존과 삭제를 한 숫자로 뭉치면 "2건 지웠다" 가 거짓이 되고, 사용자는
+    남아 있는 TC를 잃었다고 오해한다.
+    """
+    stdin_text(_titled("생성분"))
+    main(["tc", "add", "파티편성", "--family", "정상 경로",
+          "--origin", "interview", "--json", "-"])
+    stdin_text(_titled("사람이 추가"))
+    main(["tc", "add", "파티편성", "--family", "정상 경로",
+          "--origin", "user", "--json", "-"])
+    # 이 시점: '사람이 추가'(user) 만 남아 있다 — 앞의 생성분은 교체됐다
+    assert [t.title for t in _stored(ready)] == ["사람이 추가"]
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    stdin_text(_titled("새 생성분"))
+    assert main(["tc", "add", "파티편성", "--family", "정상 경로",
+                 "--origin", "interview", "--json", "-"]) == 0
+    out = capsys.readouterr().out
+
+    assert "사람 손댄 1건 보존" in out
+    assert "⚠" not in out                  # 지운 것이 없으므로 경고도 없다
+    assert {t.title for t in _stored(ready)} == {"사람이 추가", "새 생성분"}
+
+
 def test_add_stores_inferred_origin(stdin_text, ready, monkeypatch):
     stdin_text(_payload())
     main(["tc", "add", "파티편성", "--family", "정상 경로",
