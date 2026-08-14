@@ -34,6 +34,12 @@ _AUTH_ERROR_MSG = (
     "claude 인증이 만료되었습니다. 터미널에서 'claude' 를 실행해 재인증한 뒤 다시 시도하세요."
 )
 
+# 실측(재검토, 진짜 claude 로 확인): 알 수 없는 --resume 대상은 프레임 없이
+# 죽지 않는다 — 정상적인 JSON `result` 프레임으로 "errors": ["No conversation
+# found with session ID: ..."] 를 담아 온다. `stream_turn` 의 복구 판단은
+# 프레임 유무가 아니라 이 문자열이 오류 메시지 안에 있는지로 좁게 건다.
+_UNKNOWN_SESSION_MARKER = "No conversation found with session ID"
+
 
 class ClaudeMissing(Exception):
     """`claude` 실행 파일을 찾지 못했다. 메시지는 완성된 한국어 문장이다."""
@@ -149,6 +155,16 @@ def _save_sessions(path: Path, sessions: dict) -> None:
 # --- 턴 스트리밍 --------------------------------------------------------------
 
 
+def _looks_like_unknown_resume_target(message: str) -> bool:
+    """이 오류 메시지가 "그런 세션 없음" 신호를 담고 있는지 좁게 확인한다.
+
+    이 문자열이 있을 때만 복구(새 세션으로 재시도)를 건다 — 401 같은 다른
+    정상 오류까지 재시도로 끌고 가면 원인과 무관하게 실제 턴을 한 번 더
+    태워 비용이 두 배가 된다.
+    """
+    return _UNKNOWN_SESSION_MARKER in message
+
+
 def stream_turn(
     cfg: AppConfig,
     message: str,
@@ -163,49 +179,56 @@ def stream_turn(
 
     **복구.** `sessions.json` 은 "생성을 시도했다" 만 기억하지, 그 id 를 진짜
     `claude` 가 여전히 알고 있는지는 보장하지 않는다 — 사용자가 `~/.claude`
-    상태를 지웠거나 세션이 오래돼 사라졌을 수 있다. 그런 경우 `--resume` 은
-    (다른 자식 프로세스 인자 문제들과 같은 모양으로) delta/tool 하나 없이
-    곧바로 죽는다. 그 자리에서 새 세션 id 로 딱 한 번 다시 시도한다 — 그냥
-    포기하면 그 컨텐츠는 다시는 대화할 수 없는 상태로 영영 막히기 때문이다.
-    이미 델타/도구 호출이 나온 뒤라면(즉 재개 자체는 성공했고 그 이후에
-    죽은 것이라면) 다시 시도하지 않는다 — 이미 보여준 내용과 겹치는 새
-    응답을 만드는 게 더 헷갈린다.
+    상태를 지웠거나 세션이 오래돼 사라졌을 수 있다. 알 수 없는 `--resume`
+    대상은 프레임 없이 죽지 않는다 — **정상적인 JSON `result` 프레임**으로
+    `errors: ["No conversation found with session ID: ..."]` 를 담아 온다
+    (실측: 재검토, 진짜 `claude` 로 확인). 그래서 프레임 유무가 아니라 그
+    문자열이 오류 메시지 안에 있는지로 좁게 판단한다
+    (`_looks_like_unknown_resume_target`). 이미 델타/도구 호출이 나온
+    뒤라면(재개 자체는 성공했다는 뜻이므로) 다시 시도하지 않는다 — 이미
+    보여준 내용과 겹치는 새 응답을 만드는 게 더 헷갈린다.
+
+    재시도로 만든 새 세션 id 는 그 재시도가 실제 응답(델타 또는 도구 호출)을
+    낼 때만 `sessions.json` 에 적는다 — 재시도조차 곧바로 실패하면 아무것도
+    쓰지 않는다. 미리 써 두면, 실패가 연속될 때마다 uuid 를 하나씩 버리게
+    되고 그 사이 원래 살아있었을 수도 있는 id 의 기록까지 지워진다.
     """
     ref = session_ref_for(cfg, content)
     if not ref.resume:
         _mark_session_created(cfg, content, ref.id)
 
     emitted_real = False
-    unsettled_error: ChatEvent | None = None
-    for ev, unsettled in _attempt_turn(cfg, message, ref.id, ref.resume, claude):
+    stale_error: ChatEvent | None = None
+    for ev in _attempt_turn(cfg, message, ref.id, ref.resume, claude):
         if ev.kind in ("delta", "tool"):
             emitted_real = True
-        if unsettled and ref.resume and not emitted_real:
-            # `unsettled` 는 그 시도의 마지막 이벤트에만 붙는다(`_attempt_turn`
-            # 의 `finally` 가 만든 것) — 사용자에게 곧바로 내지 않고 들고
-            # 있다가 아래에서 복구할지 그대로 낼지 정한다. 여기서 `return` 으로
-            # 이 반복을 바로 끊으면 `_attempt_turn` 이 아직 `finally` 안에
-            # 있는 채로 `GeneratorExit` 를 맞아 강제 종료된다 — 자기 `settled`
-            # 판단을 끝내지 못한 채 죽으므로 `RuntimeError: generator ignored
-            # GeneratorExit` 로 번진다(실측: 이 변경 직후 테스트 스위트에서
-            # 재현됨). `continue` 로 반복을 이어가 `_attempt_turn` 이 스스로
-            # 끝맺게(다음 `next()` 에서 `StopIteration`) 둬야 한다.
-            unsettled_error = ev
+        if (ref.resume and not emitted_real and ev.kind == "error"
+                and _looks_like_unknown_resume_target(ev.data.get("message", ""))):
+            # 이 이벤트는 그 시도의 마지막 이벤트다(도달하면 `_attempt_turn`
+            # 이 곧바로 `settled=True` 로 끝난다) — 사용자에게 곧바로 내지
+            # 않고 들고 있다가 아래에서 복구할지 정한다. 여기서 `return` 으로
+            # 반복을 바로 끊으면 `_attempt_turn` 이 자기 마무리를 끝내기 전에
+            # `GeneratorExit` 를 맞아 강제 종료된다 — `continue` 로 이어가
+            # 스스로 `StopIteration` 으로 끝나게 둔다.
+            stale_error = ev
             continue
         yield ev
 
-    if unsettled_error is None:
+    if stale_error is None:
         return
 
-    reason = unsettled_error.data.get("message", "")
+    reason = stale_error.data.get("message", "")
     _p(
         "이어가려던 세션을 찾을 수 없어 새 세션으로 다시 시작합니다"
         + (f" (원인: {reason})" if reason else ""),
         err=True,
     )
     new_id = str(uuid.uuid4())
-    _mark_session_created(cfg, content, new_id)
-    for retry_ev, _retry_unsettled in _attempt_turn(cfg, message, new_id, False, claude):
+    retry_persisted = False
+    for retry_ev in _attempt_turn(cfg, message, new_id, False, claude):
+        if not retry_persisted and retry_ev.kind in ("delta", "tool"):
+            _mark_session_created(cfg, content, new_id)
+            retry_persisted = True
         yield retry_ev
 
 
@@ -215,16 +238,8 @@ def _attempt_turn(
     session_id: str,
     resume: bool,
     claude: str | list[str] | None,
-) -> Iterator[tuple[ChatEvent, bool]]:
-    """`claude` 자식 프로세스 한 번 실행. `(ChatEvent, unsettled)` 를 흘려보낸다.
-
-    `unsettled` 는 done/error 프레임 하나 없이 스트림이 끝나 `stream_turn`
-    이 스스로 만들어 낸 마지막 오류 이벤트에서만 참이다 — 그 값 자체는
-    `ChatEvent.data` 에 넣지 않는다(프런트로 나가는 페이로드 모양을 이
-    복구 판단 때문에 바꾸고 싶지 않다). `stream_turn` 은 이 표시로 "세션을
-    못 찾아 곧바로 죽었을 가능성" 과 "정상적인 API/인증 오류"(둘 다 성공한
-    JSON `result` 프레임으로 오므로 `unsettled=False`)를 구분해 후자는
-    재시도하지 않는다.
+) -> Iterator[ChatEvent]:
+    """`claude` 자식 프로세스를 한 번 실행하고 그 출력을 `ChatEvent` 로 흘려보낸다.
 
     `cwd=project_root()` 로 고정한다 — `.claude/settings.json` 의 Bash
     allowlist 는 그 디렉터리 기준으로 매칭되고, 헤드리스 실행에는 권한 승인
@@ -274,6 +289,7 @@ def _attempt_turn(
     stderr_thread.start()
 
     settled = False
+    closing = False
     try:
         for raw_line in proc.stdout:
             line = raw_line.strip()
@@ -287,14 +303,35 @@ def _attempt_turn(
                 _p(f"claude 출력 중 JSON 이 아닌 줄을 건너뜁니다: {line!r}", err=True)
                 continue
             for ev in _events_from(obj):
-                yield ev, False
+                yield ev
                 if ev.kind in ("done", "error"):
                     settled = True
                     return
+    except GeneratorExit:
+        # 소비자가 스트림을 도중에 끊었다 — 예: 브라우저가 SSE 연결을 끊어
+        # Werkzeug 가 이 제너레이터를 닫는 경우(실측: 재검토, `gen.close()`
+        # 로 재현됨). `GeneratorExit` 를 처리하는 중에는 값을 만들어 낼 수
+        # 없다 — 만들면 그 자체가 "RuntimeError: generator ignored
+        # GeneratorExit" 다. 아래 `finally` 가 `settled=False` 인 채로 마지막
+        # 오류를 다시 `yield` 하려던 것이 바로 그 상황이었다. 여기서는
+        # 표시만 남기고 그대로 다시 던진다 — 자식 프로세스 정리는 `finally`
+        # 가 한다.
+        closing = True
+        raise
     finally:
         _close(proc)
         stderr_thread.join(timeout=5)
-        if not settled:
+        # `_drain_stderr` 가 이 시점까지 `proc.stderr` 를 계속 읽고 있었으므로
+        # (join 전에 닫으면 그 스레드가 다 읽지 못한 stderr 을 잃는다), 다
+        # 읽고 난 지금 닫는다 — 안 닫아 두면 이 파일 객체가 나중에 GC 로
+        # 정리될 때 "Exception ignored while finalizing file" 로 새어나간다
+        # (실측: 재검토, 소비자가 스트림을 일찍 끊는 시나리오에서 재현됨).
+        try:
+            if proc.stderr:
+                proc.stderr.close()
+        except OSError:
+            pass
+        if not settled and not closing:
             # done 도 error 도 없이 스트림이 끝났다 — 성공처럼 보이며 조용히
             # 멈추는 것이 이 프로젝트가 반복해서 당해 온 실패 모양이므로,
             # 프런트가 무한정 기다리지 않도록 명시적인 오류로 마무리한다.
@@ -309,7 +346,7 @@ def _attempt_turn(
             yield ChatEvent("error", {
                 "kind": "error",
                 "message": _unsettled_error_msg(detail),
-            }), True
+            })
 
 
 def _child_env() -> dict:
@@ -354,13 +391,29 @@ def _send_message(proc: subprocess.Popen, message: str) -> None:
         pass  # 자식이 stdin 을 안 읽고 먼저 끝났을 수 있다 — 출력 처리는 계속한다
 
 
+_CLOSE_WAIT_TIMEOUT = 5.0  # 초 — 이 이상은 자식 종료를 기다리지 않는다.
+
+
 def _close(proc: subprocess.Popen) -> None:
+    """자식 프로세스를 정리한다.
+
+    소비자가 스트림을 다 안 받고 끊어도(브라우저가 SSE 연결을 끊어 Werkzeug
+    가 이 제너레이터를 닫는 경우) 자식이 계속 살아있게 두지 않는다.
+    `proc.wait()` 를 시간제한 없이 부르면(실측: 재검토 — `gen.close()` 가
+    12초가 지나도 안 끝났고 자식은 그때까지 살아 있었다) 이 스레드가
+    영원히 막히고 `claude` 프로세스가 좀비로 남는다. 일정 시간 기다려도 안
+    끝나면 강제로 죽인다.
+    """
     try:
         if proc.stdout:
             proc.stdout.close()
     except OSError:
         pass
-    proc.wait()
+    try:
+        proc.wait(timeout=_CLOSE_WAIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 
 def _drain_stderr(proc: subprocess.Popen, sink: list[str]) -> None:
@@ -437,5 +490,20 @@ def _result_events(obj: dict) -> Iterator[ChatEvent]:
 
 
 def _generic_error_msg(obj: dict) -> str:
-    detail = obj.get("result") or "원인을 알 수 없습니다"
+    detail = obj.get("result") or _first_error_text(obj) or "원인을 알 수 없습니다"
     return f"claude 실행 중 오류가 발생했습니다: {detail}. 잠시 후 다시 시도하세요."
+
+
+def _first_error_text(obj: dict) -> str:
+    """`result` 키가 없는 오류 프레임에서 원인을 뽑는다.
+
+    실측(재검토): 알 수 없는 `--resume` 대상 같은 일부 오류는 `result` 없이
+    `errors` 배열만 온다(`"errors": ["No conversation found with session
+    ID: ..."]`). `obj.get("result")` 만 보면 이 원인이 "원인을 알 수
+    없습니다" 로 뭉개져 사용자가 진짜 원인을 못 본다 — 복구(재시도)가 안
+    먹혔을 때 특히 중요하다, 그게 사용자가 보는 유일한 설명이므로.
+    """
+    errors = obj.get("errors")
+    if isinstance(errors, list) and errors:
+        return str(errors[0])
+    return ""

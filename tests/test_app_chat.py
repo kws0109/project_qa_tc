@@ -1,12 +1,15 @@
 """`claude` 자식 프로세스. 진짜 API 는 부르지 않는다."""
 
 import json
+import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
 
+from qatc.app import chat as chat_module
 from qatc.app.chat import ChatEvent, ClaudeMissing, session_id_for, stream_turn
 from qatc.config import AppConfig, project_root
 
@@ -436,23 +439,32 @@ def test_no_content_chosen_yet_follows_the_same_create_then_resume_path(cfg, tmp
 
 # --- `sessions.json` 이 있다고 진짜 `claude` 도 그 세션을 안다는 보장은 없다 -
 #
-# 사용자가 `~/.claude` 상태를 지웠거나 세션이 오래돼 사라졌으면, `--resume`
-# 은 실측된 "이미 쓰이고 있다" 오류와 같은 모양(정상 JSON 프레임 하나 없이
-# stderr 문구만 남기고 곧바로 종료)으로 죽을 것으로 본다 — 둘 다 "그 세션
-# id 를 claude 가 지금 받아들이지 않는다" 는 같은 종류의 인자 단계 거부이기
-# 때문이다. 이 가정을 실측으로 검증하지는 않았다(따로 값을 태워야 해서
-# 라이브 런의 예산 밖). 그 자리에서 그냥 포기하면 그 컨텐츠는 다시는 대화할
-# 수 없는 상태로 영영 막힌다 — 그래서 새 세션 id 로 딱 한 번 다시 시도한다.
+# 재검토(진짜 `claude` 로 확인): 알 수 없는 `--resume` 대상은 프레임 없이
+# 죽지 않는다 — **정상적인 JSON `result` 프레임**으로 `errors: ["No
+# conversation found with session ID: ..."]` 를 담아 온다. (`--session-id`
+# 를 두 번 보내는 "이미 쓰이고 있다" 오류만 프레임 없이 stderr 로 죽는데, 이
+# 수정 자체가 정상 흐름에서 그 경로를 없앴다.) 그래서 복구는 프레임 유무가
+# 아니라 그 문자열이 오류 메시지 안에 있는지로 좁게 판단한다.
 
 
-def _fake_claude_session_aware(tmp_path, *, ok_lines, resume_stderr, resume_record, create_record):
-    """`--resume` 이면 즉시 실패(빈 stdout, stderr 만), `--session-id` 면 성공.
+def _unknown_session_error_line(session_id: str) -> str:
+    return json.dumps({
+        "type": "result", "subtype": "error_during_execution", "is_error": True,
+        "total_cost_usd": 0,
+        "errors": [f"No conversation found with session ID: {session_id}"],
+    }, ensure_ascii=False)
+
+
+def _fake_claude_session_aware(tmp_path, *, ok_lines, unknown_session_id, resume_record, create_record):
+    """`--resume` 이면 "그런 세션 없음" 정상 JSON 오류 프레임을 내고,
+    `--session-id` 면 성공(`ok_lines`)한다.
 
     어느 쪽으로 불렸는지에 따라 argv 를 다른 파일에 기록해, 복구가 실제로
     새 세션으로(즉 `--session-id` 로) 재시도했는지 구분해서 검사할 수 있게
     한다.
     """
     script = tmp_path / "fake_claude_session_aware.py"
+    error_line = _unknown_session_error_line(unknown_session_id)
     script.write_text(textwrap.dedent(f"""
         import json
         import os
@@ -465,9 +477,9 @@ def _fake_claude_session_aware(tmp_path, *, ok_lines, resume_stderr, resume_reco
             json.dump({{"argv": argv, "cwd": os.getcwd()}}, f, ensure_ascii=False)
 
         if resumed:
-            sys.stderr.write({resume_stderr!r})
-            sys.stderr.flush()
-            sys.exit(1)
+            sys.stdout.write({error_line!r} + "\\n")
+            sys.stdout.flush()
+            sys.exit(0)
 
         for line in {ok_lines!r}:
             sys.stdout.write(line + "\\n")
@@ -478,7 +490,8 @@ def _fake_claude_session_aware(tmp_path, *, ok_lines, resume_stderr, resume_reco
 
 
 def test_unknown_resume_target_recovers_with_a_fresh_session(cfg, tmp_path):
-    """`--resume` 대상이 사라졌으면, 새 세션으로 한 번 다시 시도해 턴을 살린다.
+    """`--resume` 대상을 못 찾는다는 정상 JSON 오류 프레임이 오면, 새 세션으로
+    한 번 다시 시도해 턴을 살린다.
 
     그렇지 않으면 이 컨텐츠는 사용자가 다시는 대화할 수 없는 상태로 영영
     막힌다 — 세션 하나 잃는 것보다 훨씬 나쁘다.
@@ -490,8 +503,7 @@ def test_unknown_resume_target_recovers_with_a_fresh_session(cfg, tmp_path):
     resume_record = tmp_path / "resume_record.json"
     create_record = tmp_path / "create_record.json"
     claude_cmd = _fake_claude_session_aware(
-        tmp_path, ok_lines=OK_LINES,
-        resume_stderr=f"Error: No conversation found with session ID: {stale_id}",
+        tmp_path, ok_lines=OK_LINES, unknown_session_id=stale_id,
         resume_record=resume_record, create_record=create_record)
 
     evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
@@ -509,3 +521,260 @@ def test_unknown_resume_target_recovers_with_a_fresh_session(cfg, tmp_path):
 
     # 다음 턴은 이 새 id 를 재개해야 한다 — 낡은 id 로 되돌아가면 다시 막힌다.
     assert session_id_for(cfg, "파티편성") == new_id
+
+
+def _fake_claude_always_unknown_session(tmp_path, mentioned_id):
+    """`--resume`·`--session-id` 상관없이 항상 "세션 없음" 오류로 끝나는 가짜.
+
+    재시도조차 실패하는 상황(원래 시도와 재시도 둘 다 실패)을 흉내내, 그
+    실패가 `sessions.json` 을 훼손하지 않는지 검사하는 데 쓴다.
+    """
+    script = tmp_path / "fake_claude_always_unknown.py"
+    error_line = _unknown_session_error_line(mentioned_id)
+    script.write_text(textwrap.dedent(f"""
+        import sys
+        sys.stdout.write({error_line!r} + "\\n")
+        sys.stdout.flush()
+        sys.exit(0)
+    """), encoding="utf-8")
+    return [sys.executable, str(script)]
+
+
+def test_a_second_consecutive_failure_does_not_discard_the_original_session_id(cfg, tmp_path):
+    """재시도조차 델타/도구 없이 실패하면, `sessions.json` 은 원래 id 를 그대로 지켜야 한다.
+
+    안 지키면 실패할 때마다 uuid 를 하나씩 태워버려, 몇 번만 연속 실패해도
+    원래 살아있었을 세션 id 조차 기록에서 사라진다 — 재검토가 실측한 연쇄
+    붕괴("세 번 연속 실패가 uuid 세 개를 버렸다").
+    """
+    list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=tmp_path / "record0.json")))
+    stale_id = session_id_for(cfg, "파티편성")
+
+    always_unknown = _fake_claude_always_unknown_session(tmp_path, stale_id)
+    evs = list(stream_turn(cfg, "y", "파티편성", claude=always_unknown))
+
+    assert [e.kind for e in evs] == ["error"]
+    # sessions.json 은 원래 id 그대로다 — 재시도가 실패한 새 id 로 덮이지
+    # 않았다.
+    assert session_id_for(cfg, "파티편성") == stale_id
+
+
+# --- 뮤테이션: 좁은 신호를 "아무 오류" 로 넓히면 안 된다 -------------------
+
+
+def test_a_401_on_a_resume_turn_does_not_trigger_recovery(cfg, tmp_path):
+    """세션을 못 찾는다는 신호가 없는 오류(예: 401)는 재시도로 이어지면 안 된다.
+
+    재시도로 이어지면 원인과 무관하게 실제 턴을 한 번 더 태워 비용이 두
+    배가 된다 — 인증 문제와 세션 문제는 원인이 다르다.
+    """
+    list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=tmp_path / "record0.json")))
+
+    record = tmp_path / "resume_record.json"
+    evs = list(stream_turn(cfg, "y", "파티편성", claude=_fake_claude(
+        tmp_path, AUTH_LINES, record_to=record)))
+
+    assert [e.kind for e in evs] == ["error"]
+    assert evs[0].data["kind"] == "auth"
+    # 재시도가 없었다 — 기록된 argv 가 여전히 --resume 이다. 재시도였다면
+    # 이 같은 경로(record 파일)가 --session-id 로 다시 기록되어 덮였을
+    # 것이다.
+    argv = json.loads(record.read_text(encoding="utf-8"))["argv"]
+    assert "--resume" in argv
+    assert "--session-id" not in argv
+
+
+MID_TURN_UNKNOWN_SESSION_LINES = [
+    json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "부분 응답"}]}}, ensure_ascii=False),
+    json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                "total_cost_usd": 0,
+                "errors": ["No conversation found with session ID: deadbeef"]},
+               ensure_ascii=False),
+]
+
+
+def test_emitted_real_content_blocks_recovery_even_with_the_unknown_session_marker(cfg, tmp_path):
+    """이미 델타가 나온 뒤에 그 신호가 떠도 재시도하지 않는다.
+
+    재시도하면 이미 보여준 응답과 겹치는 턴을 통째로 다시 태워 비용이 두
+    배가 된다. 이 프레임은 `result` 없이 `errors` 배열만 담고 있으므로,
+    사용자에게 보이는 메시지가 "원인을 알 수 없습니다" 로 뭉개지지 않는지도
+    함께 확인한다(§ `result` 가 없는 오류 프레임도 원인을 보여줘야 한다).
+    """
+    list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=tmp_path / "record0.json")))
+
+    record = tmp_path / "resume_record.json"
+    evs = list(stream_turn(cfg, "y", "파티편성", claude=_fake_claude(
+        tmp_path, MID_TURN_UNKNOWN_SESSION_LINES, record_to=record)))
+
+    assert [e.kind for e in evs] == ["delta", "error"]
+    assert "No conversation found with session ID" in evs[-1].data["message"]
+    assert "원인을 알 수 없습니다" not in evs[-1].data["message"]
+
+    argv = json.loads(record.read_text(encoding="utf-8"))["argv"]
+    assert "--resume" in argv
+    assert "--session-id" not in argv
+
+
+# --- 뮤테이션: 옛 형식(문자열 하나) sessions.json 도 재개로 해석해야 한다 ---
+
+
+def test_legacy_string_session_entry_still_resumes(cfg, tmp_path):
+    """`sessions.json` 의 옛 형식(문자열 하나만)도 재개로 해석해야 한다.
+
+    새 `{"id":..., "created":...}` 형식이 생기기 전에 만들어진 파일이 있을
+    수 있다 — 그 id 를 `created=False` 로 잘못 해석해 다시 `--session-id`
+    로 보내면(이미 존재하는 세션에) "이미 쓰이고 있다" 오류가 똑같이
+    재현된다.
+    """
+    legacy_id = "11111111-1111-1111-1111-111111111111"
+    sessions_path = cfg.knowledge_path / "sessions.json"
+    sessions_path.write_text(
+        json.dumps({"파티편성": legacy_id}, ensure_ascii=False), encoding="utf-8")
+
+    record = tmp_path / "record.json"
+    evs = list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=record)))
+    assert evs
+    argv = json.loads(record.read_text(encoding="utf-8"))["argv"]
+    assert "--session-id" not in argv
+    assert argv[argv.index("--resume") + 1] == legacy_id
+
+
+# --- `result` 가 없는 오류 프레임도 원인을 보여줘야 한다 --------------------
+#
+# 재검토: 세션을 못 찾는 오류가 정확히 이 모양(`result` 없음, `errors` 배열
+# 만 있음)으로 온다. `obj["result"]` 만 보면 "원인을 알 수 없습니다" 로
+# 뭉개져 사용자가 진짜 원인을 못 본다.
+
+ERRORS_ARRAY_LINES = [
+    json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                "total_cost_usd": 0, "errors": ["some other failure detail"]},
+               ensure_ascii=False),
+]
+
+
+def test_error_message_falls_back_to_the_errors_array_when_result_is_absent(cfg, tmp_path):
+    """`result` 키가 없는 오류 프레임(`errors` 배열만 있음)도 원인을 그대로 보여줘야 한다.
+
+    복구가 안 먹혔을 때(위 401 테스트, 연속 실패 테스트) 이 메시지가
+    사용자가 보는 유일한 설명이라 특히 중요하다.
+    """
+    evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(
+        tmp_path, ERRORS_ARRAY_LINES)))
+    errs = [e for e in evs if e.kind == "error"]
+    assert len(errs) == 1
+    assert "some other failure detail" in errs[0].data["message"]
+    assert "원인을 알 수 없습니다" not in errs[0].data["message"]
+
+
+# --- 소비자가 스트림을 도중에 끊어도 죽지 않고, 안 죽은 자식은 정리된다 -----
+#
+# 재검토가 실측: `gen.close()` 를(Werkzeug 가 SSE 연결이 끊길 때 하는 것과
+# 같은 모양으로) 델타 두 개 받은 뒤 부르면 "RuntimeError: generator ignored
+# GeneratorExit" 로 죽었다 — `_attempt_turn` 의 `finally` 가 `settled=False`
+# 인 채로 마지막 오류를 다시 `yield` 하려 했기 때문이다. 게다가 그때의
+# `_close` 는 시간제한 없이 `proc.wait()` 를 불러, 자식이 살아있으면 12초가
+# 지나도 안 끝났다.
+
+
+def _fake_claude_that_lingers(tmp_path, lines):
+    """몇 줄을 쓰고 나서 곧바로 끝나지 않고 오래 붙어 있는 가짜.
+
+    소비자가 스트림을 일찍 끊었을 때 `_close` 가 실제로 강제 종료하는지
+    검사하는 데 쓴다 — 빨리 끝나 버리면 "죽지 않은 자식을 정리하는지" 를
+    검사할 수 없다.
+    """
+    script = tmp_path / "fake_claude_lingers.py"
+    script.write_text(textwrap.dedent(f"""
+        import sys
+        import time
+
+        for line in {lines!r}:
+            sys.stdout.write(line + "\\n")
+            sys.stdout.flush()
+        time.sleep(30)
+    """), encoding="utf-8")
+    return [sys.executable, str(script)]
+
+
+def test_closing_the_generator_early_does_not_raise_and_kills_the_child(cfg, tmp_path, monkeypatch):
+    """소비자가 스트림을 일찍 끊어도(Werkzeug 가 SSE 연결 끊김에 하는 것과
+    같은 모양) `RuntimeError` 없이 정리되고, 안 죽은 자식은 빠르게 강제
+    종료된다.
+
+    `_attempt_turn` 을 직접 닫는다(`stream_turn` 을 통해 간접적으로 닫지
+    않는다) — `stream_turn` 의 `for` 루프가 대신 닫아 주면, 안에서 난
+    `RuntimeError` 가 이 테스트 프레임까지 동기적으로 전파되지 않고
+    `sys.unraisablehook` 경고로만 새 나가 `assert`/`pytest.raises` 로 못
+    잡을 수 있다(실측: 뮤테이션 검증 중 확인 — 테스트가 "통과" 로 잘못
+    보고됐다). 고치려는 `except GeneratorExit` 는 `_attempt_turn` 안에
+    있으므로, 거기를 직접 닫아야 뮤테이션이 확실히 걸린다.
+    """
+    monkeypatch.setattr(chat_module, "_CLOSE_WAIT_TIMEOUT", 0.2)
+
+    lines = [json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "hi"}]}}, ensure_ascii=False)]
+    gen = chat_module._attempt_turn(
+        cfg, "x", "any-session-id", False, _fake_claude_that_lingers(tmp_path, lines))
+    ev = next(gen)
+    assert ev.kind == "delta"
+
+    start = time.monotonic()
+    gen.close()          # RuntimeError 가 나면 여기서 실패한다
+    elapsed = time.monotonic() - start
+    # 몽키패치한 0.2 초 남짓이어야 한다 — 30 초 sleep 이 끝나길 기다렸다면
+    # 강제 종료가 안 먹힌 것이다.
+    assert elapsed < 5.0
+
+
+@pytest.mark.filterwarnings("error")
+def test_stream_turn_can_also_be_closed_early_without_an_unraisable_warning(cfg, tmp_path, monkeypatch):
+    """실제 소비 경로(`stream_turn`, `_attempt_turn` 을 간접적으로 닫는 경로)도
+    조용히 끊긴다 — 경고조차 남기지 않는다.
+
+    `filterwarnings("error")` 로 이 테스트 안의 어떤 경고도 실패로 바꾼다 —
+    안 그러면 `_attempt_turn` 을 간접적으로 닫을 때 나는
+    `RuntimeError: generator ignored GeneratorExit` 가 `sys.unraisablehook`
+    경고로만 새 나가 이 테스트가 조용히 "통과" 로 보고된다(위 직접 테스트의
+    docstring에 적은 바로 그 함정).
+    """
+    monkeypatch.setattr(chat_module, "_CLOSE_WAIT_TIMEOUT", 0.2)
+
+    lines = [json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "hi"}]}}, ensure_ascii=False)]
+    gen = stream_turn(cfg, "x", None, claude=_fake_claude_that_lingers(tmp_path, lines))
+    ev = next(gen)
+    assert ev.kind == "delta"
+    gen.close()
+
+
+class _NeverExitingProc:
+    """`.wait()` 가 `kill()` 전까지 항상 timeout 나는 가짜 프로세스.
+
+    `_close` 가 실제로 `kill()` 을 부르는지, 진짜 자식 프로세스 없이 빠르고
+    결정적으로 검사한다.
+    """
+
+    def __init__(self):
+        self.stdout = None
+        self.killed = False
+
+    def wait(self, timeout=None):
+        if not self.killed:
+            raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout or 0)
+        return 0
+
+    def kill(self):
+        self.killed = True
+
+
+def test_close_kills_a_child_that_never_exits(monkeypatch):
+    monkeypatch.setattr(chat_module, "_CLOSE_WAIT_TIMEOUT", 0.01)
+    proc = _NeverExitingProc()
+    chat_module._close(proc)
+    assert proc.killed
