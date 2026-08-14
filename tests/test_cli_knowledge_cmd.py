@@ -719,3 +719,73 @@ def test_no_profile_warning_goes_to_stderr_not_stdout(cfg_env, capsys, tmp_path)
     cap = capsys.readouterr()
     assert "검증을 건너뜁니다" in cap.err
     assert "검증을 건너뜁니다" not in cap.out
+
+
+# --- 읽기 명령의 --game 오타가 유령 DB 를 만들지 않는다 (최종 검토 3절 1번) ---
+#
+# `resolve_store` 는 `KnowledgeStore(root / f"{game}.db").open()` 인데, sqlite 는
+# **여는 순간 파일을 만든다.** 그래서 `slot status 파티편성 --game starrial` 은
+# rc=1 로 끝나면서 `starrial.db` 를 남겼다 — README·SKILL.md·games.py 도크스트링이
+# 모두 "오타는 거부된다, 새 DB 가 조용히 생기지 않는다" 를 약속하는데도.
+#
+# **`resolve_store` 에 `validate_game` 을 넣어 고치지 않는다.** 그건 이 브랜치의
+# 설계 결정(읽기 경로는 미검증)을 뒤집어, 게임이 `profiles/` 에서 사라지면 그
+# DB 에 쌓인 인터뷰 데이터에 접근할 방법이 없어진다. 대신 **없는 것을 만들지
+# 않는** 쪽으로 고친다: 명시된 게임의 DB 파일이 없으면 만들지 말고 멈춘다.
+
+_READ_COMMANDS_WITH_GAME = [
+    ["slot", "status", "파티편성"],
+    ["slot", "set", "파티편성", "core_action", "--status", "unknown"],
+    ["tc", "plan", "파티편성"],
+    ["tc", "list", "파티편성"],
+    ["export", "파티편성"],
+]
+
+
+@pytest.mark.parametrize("argv", _READ_COMMANDS_WITH_GAME,
+                         ids=lambda a: " ".join(a[:2]))
+def test_explicit_game_typo_makes_no_ghost_db(cfg_env, capsys, argv):
+    """오타 난 `--game` 으로 읽으면 그 이름의 DB 가 **생기지 않는다.**"""
+    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    capsys.readouterr()
+
+    assert main(argv + ["--game", "starrial"]) == 1
+    out = capsys.readouterr().out
+
+    assert not (cfg_env / "starrial.db").exists(), (
+        f"유령 DB 가 생겼다: {sorted(p.name for p in cfg_env.glob('*.db'))}"
+    )
+    assert "starrial" in out                       # 무엇이 문제인지
+    assert "slot init" in out                      # 다음 조치
+    assert out.count("오류:") == 1                  # 파이썬 예외가 아니라 우리 문장
+    assert "Error" not in out
+
+
+def test_the_missing_db_message_names_the_file(cfg_env, capsys):
+    """어느 파일을 찾다 실패했는지 말한다 — 경로가 없으면 오타인지 폴더 문제인지 모른다."""
+    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    capsys.readouterr()
+
+    assert main(["slot", "status", "파티편성", "--game", "starrial"]) == 1
+    out = capsys.readouterr().out
+    assert str(cfg_env / "starrial.db") in out
+
+
+def test_an_existing_db_still_opens_with_an_explicit_game(cfg_env, capsys):
+    """반대 방향 — 있는 DB 는 그대로 열린다. 위 가드가 정상 경로를 막으면 안 된다."""
+    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    capsys.readouterr()
+
+    assert main(["slot", "status", "파티편성", "--game", "starrail", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["game"] == "starrail"
+
+
+def test_slot_init_still_creates_the_db_for_a_registered_game(cfg_env, capsys):
+    """생성 경로는 여전히 만든다 — 가드는 `resolve_store`(읽기)에만 있다.
+
+    `slot init` 까지 "없으면 멈춘다" 가 되면 새 게임을 영영 시작할 수 없다.
+    """
+    assert not (cfg_env / "genshin.db").exists()
+    assert main(["slot", "init", "파티편성", "--game", "genshin"]) == 0
+    capsys.readouterr()
+    assert (cfg_env / "genshin.db").exists()

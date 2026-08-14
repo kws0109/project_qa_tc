@@ -37,10 +37,33 @@ def resolve_store(cfg: AppConfig, game: str | None, content: str | None) -> Know
 
     `--game` 이 있으면 그대로. 없으면 컨텐츠를 가진 DB를 찾는다 — 인터뷰 중
     매번 `--game` 을 치게 하면 호출이 길어지고 오타가 난다.
+
+    :raises SystemExit: `--game` 을 명시했는데 그 DB 파일이 없을 때.
+
+    **여기서 `validate_game` 을 부르지 않는다.** 이건 읽기 경로다. 게임이
+    `profiles/` 에서 사라졌다고 그 DB를 못 열게 하면 쌓아둔 인터뷰 데이터에
+    접근할 방법이 없어진다 (`games.py` 도크스트링의 설계 결정).
+
+    대신 **없는 것을 만들지 않는다.** sqlite 는 여는 순간 파일을 만들므로,
+    예전에는 `slot status 파티편성 --game starrial` 이 rc=1 로 끝나면서도
+    `starrial.db` 를 남겼다 — README·SKILL.md 가 "오타는 거부된다, 새 DB가
+    조용히 생기지 않는다" 를 약속하는데 읽기 경로에서 그 약속이 깨졌다.
+    프로파일과 대조하지 않고도 오타를 잡을 수 있다: 그 이름의 DB가 애초에
+    없기 때문이다. 그리고 이 판정은 프로파일에 기대지 않으므로 위 설계
+    결정과 충돌하지 않는다 — 게임이 `profiles/` 를 떠나도 DB 파일은 남는다.
     """
     root = cfg.knowledge_path
     if game:
-        return KnowledgeStore(root / f"{game}.db").open()
+        path = root / f"{game}.db"
+        if not path.exists():
+            # 문구는 `cmd_knowledge` 의 같은 조건과 맞춘다 — 두 명령이 같은
+            # 상황을 다른 말로 설명하면 호출자(모델)가 다른 상황으로 읽는다.
+            raise SystemExit(
+                f"'{game}' 지식 DB가 없습니다 ({path}). "
+                f"게임 이름을 확인하거나, "
+                f"'qatc slot init <컨텐츠> --game {game}'으로 먼저 만드세요."
+            )
+        return KnowledgeStore(path).open()
 
     dbs = sorted(root.glob("*.db"))
     if not dbs:
