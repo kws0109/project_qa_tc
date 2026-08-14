@@ -65,6 +65,20 @@ def test_tree_marks_planned_and_blocked_families(cfg):
     assert "모른다" in fams["재화 부족"]["reason"]
 
 
+def test_tree_does_not_mark_never_generated_family_as_withdrawn(cfg):
+    """`재화 부족`은 TC 가 한 번도 생성된 적이 없다 — 철회와는 다른 상태다.
+
+    `withdrawn_families` 의 둘째 인자를 "TC 가 실제로 있는 계열"이 아니라
+    "슬롯이 아는 모든 계열"로 넓히면, 아직 만들어진 적도 없는 계열까지
+    "근거 철회됨"으로 보인다. 그러면 사용자는 실제로는 존재하지 않는 TC 가
+    철회당했다고 오해한다.
+    """
+    _seed(cfg)
+    fams = {f["family"]: f for f in tree(cfg)["games"][0]["contents"][0]["families"]}
+    assert fams["재화 부족"]["tc_count"] == 0
+    assert fams["재화 부족"]["withdrawn"] is False
+
+
 def test_tree_marks_withdrawn_evidence(cfg):
     """근거를 철회해도 TC 는 남는다 — 트리가 그것을 표시해야 한다."""
     name = _seed(cfg)
@@ -122,6 +136,67 @@ def test_content_detail_marks_withdrawn_testcases(cfg):
     with KnowledgeStore(cfg.knowledge_path / "starrail.db") as st:
         st.set_slot(name, "core_action", SlotStatus.NA)
     assert content_detail(cfg, "starrail", name)["testcases"][0]["withdrawn"] is True
+
+
+def test_content_detail_does_not_mark_live_testcase_as_withdrawn(cfg):
+    """근거가 살아있는 TC 는 다른 계열이 비어 있어도 철회로 보이면 안 된다.
+
+    `재화 부족`처럼 TC 가 아예 없는 계열이 슬롯 목록에 함께 있어도, 실제로
+    존재하는 `정상 경로` TC 의 `withdrawn` 판정에 영향을 주면 안 된다 —
+    둘째 인자 범위가 "TC 가 있는 계열"이 아니라 "슬롯이 아는 모든 계열"로
+    넓어지는 회귀를 잡는다.
+    """
+    name = _seed(cfg)
+    d = content_detail(cfg, "starrail", name)
+    assert d["testcases"][0]["withdrawn"] is False
+
+
+def test_content_detail_withdraws_a_testcase_whose_family_has_no_slot(cfg):
+    """`중단` 은 등록된 계열이지만 이 컨텐츠 유형의 슬롯 어디에도 없다.
+
+    (`qatc/knowledge/gate.py` 의 `FAMILY_META` 주석: 진술에서 통신 끊김·강제
+    종료가 도출되는 경우가 없어 기본 슬롯에 없다.) `withdrawn_families` 의
+    둘째 인자를 "TC 가 실제로 있는 계열"이 아니라 "슬롯이 아는 모든 계열"로
+    넓히면, 슬롯이 아예 모르는 이 계열은 그 집합에 들지도 못해 "철회
+    아님"으로 잘못 보인다. 근거가 될 슬롯이 처음부터 없었으므로 이 TC 는
+    철회된 것으로 표시돼야 한다 — `content_detail` 자리의 범위 축소가
+    `tree()` 자리와 별개로 검증돼야 하는 지점이다.
+    """
+    name = _seed(cfg)
+    with KnowledgeStore(cfg.knowledge_path / "starrail.db") as st:
+        st.add_testcase(name, "중단", _tc(title="중단 TC", family="중단"), [])
+    d = content_detail(cfg, "starrail", name)
+    tc = next(t for t in d["testcases"] if t["family"] == "중단")
+    assert tc["withdrawn"] is True
+
+
+def test_testcase_meta_scopes_to_requested_content(cfg):
+    """`WHERE content = ?` 가 빠지면 다른 컨텐츠의 TC 까지 섞여 든다."""
+    name = _seed(cfg)
+    other = "무기강화"
+    with KnowledgeStore(cfg.knowledge_path / "starrail.db") as st:
+        st.init_content(other, game="starrail", types=[])
+        st.set_slot(other, "core_action", SlotStatus.FILLED, "무기를 강화한다")
+        st.add_testcase(other, "정상 경로", _tc(title="다른 컨텐츠 TC"), ["core_action"])
+        own_ids = {tc.id for tc in st.testcases(name)}
+        other_ids = {tc.id for tc in st.testcases(other)}
+        meta = st.testcase_meta(name)
+    assert set(meta) == own_ids
+    assert not (other_ids & set(meta))
+
+
+def test_content_detail_on_missing_game_db_does_not_create_it(cfg):
+    """DB 가 없는 게임을 조회하면 예외만 던지고 끝나야 한다.
+
+    `KnowledgeStore.open()` 은 연결하면서 `executescript(_SCHEMA)` + `commit()`
+    을 실행한다 — 그래서 존재 확인 없이 그냥 열면 없던 `<game>.db` 가
+    스키마까지 갖춘 채 새로 생긴다. 이건 앱이 지식 DB 에 쓰지 않는다는
+    설계를 뒤엎는 것이다. 예외가 났다는 사실만으로는 아무것도 안 만들어졌다는
+    증거가 안 된다 — 파일 존재 여부를 직접 봐야 한다.
+    """
+    with pytest.raises(ContentNotFound):
+        content_detail(cfg, "없는게임", "아무거나")
+    assert not (cfg.knowledge_path / "없는게임.db").exists()
 
 
 def test_content_detail_on_missing_content_says_what_to_do(cfg):
