@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,6 +131,15 @@ def stream_turn(
 
     _send_message(proc, message)
 
+    # stderr 는 별도 스레드로 계속 비운다. 우리가 stdout 만 블로킹으로 읽는
+    # 동안 자식이 stderr 파이프 버퍼를 채울 만큼 많이 쓰면, 아무도 안 읽는
+    # stderr 에서 자식이 영원히 막혀 stdout 도 더는 진행되지 않는다(데드락).
+    # 계속 비워 두면 그 위험이 없고, 덤으로 실패 원인을 진단에 쓸 수 있다.
+    stderr_lines: list[str] = []
+    stderr_thread = threading.Thread(
+        target=_drain_stderr, args=(proc, stderr_lines), daemon=True)
+    stderr_thread.start()
+
     settled = False
     try:
         for raw_line in proc.stdout:
@@ -150,17 +160,22 @@ def stream_turn(
                     return
     finally:
         _close(proc)
+        stderr_thread.join(timeout=5)
         if not settled:
             # done 도 error 도 없이 스트림이 끝났다 — 성공처럼 보이며 조용히
             # 멈추는 것이 이 프로젝트가 반복해서 당해 온 실패 모양이므로,
             # 프런트가 무한정 기다리지 않도록 명시적인 오류로 마무리한다.
-            _p("claude 프로세스가 done/error 없이 종료되었습니다.", err=True)
+            # 진짜 충돌(exit code != 0)과 그냥 멈춘 것을 구분할 수 있도록,
+            # stderr 에 뭔가 남았으면 그 내용을 원인으로 함께 보여준다.
+            detail = "".join(stderr_lines).strip()
+            _p(
+                "claude 프로세스가 done/error 없이 종료되었습니다."
+                + (f" (stderr: {detail})" if detail else ""),
+                err=True,
+            )
             yield ChatEvent("error", {
                 "kind": "error",
-                "message": (
-                    "claude 프로세스가 응답을 끝까지 보내지 않고 종료되었습니다. "
-                    "잠시 후 다시 시도하세요."
-                ),
+                "message": _unsettled_error_msg(detail),
             })
 
 
@@ -213,6 +228,34 @@ def _close(proc: subprocess.Popen) -> None:
     except OSError:
         pass
     proc.wait()
+
+
+def _drain_stderr(proc: subprocess.Popen, sink: list[str]) -> None:
+    """`proc.stderr` 를 끝까지 읽어 `sink` 에 쌓는다. 별도 스레드에서 돈다.
+
+    stdout 을 읽는 메인 루프와 동시에 돌아야 한다 — stdout 을 다 읽은 뒤에
+    읽기 시작하면, 그 사이 자식이 stderr 파이프를 채워 막혔을 때 이미
+    늦는다.
+    """
+    try:
+        if proc.stderr:
+            for line in proc.stderr:
+                sink.append(line)
+    except (OSError, ValueError):
+        pass
+
+
+_UNSETTLED_MSG = (
+    "claude 프로세스가 응답을 끝까지 보내지 않고 종료되었습니다."
+)
+
+
+def _unsettled_error_msg(stderr_detail: str) -> str:
+    msg = _UNSETTLED_MSG
+    if stderr_detail:
+        tail = stderr_detail[-500:]     # 너무 길면 마지막 부분만
+        msg += f" (원인: {tail})"
+    return msg + " 잠시 후 다시 시도하세요."
 
 
 # --- stream-json → ChatEvent -------------------------------------------------
