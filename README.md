@@ -64,10 +64,15 @@ qatc tc list <컨텐츠>                                    # TC 목록 + 미충
 qatc knowledge --game starrail                          # 게임별 컨텐츠 커버리지
 qatc export <컨텐츠>                                     # xlsx 출력
 qatc config                                              # 설정·프로파일 확인
+qatc config --game starrail                              # 기본 게임 설정 (이후 --game 생략 가능)
 ```
 
-`--game` 은 컨텐츠 이름이 한 게임의 지식 저장소에서만 발견되면 생략할 수
-있습니다. 여러 게임에 같은 이름의 컨텐츠가 있으면 명시해야 합니다.
+`--game` 은 두 가지 방법으로 생략할 수 있습니다. **읽기 명령**(`slot status`,
+`tc plan`, `export` 등)은 컨텐츠 이름이 한 게임에서만 발견되면 알아서 찾습니다.
+**생성 명령**(`slot init`, `knowledge`)은 `qatc config --game <게임>` 으로 정해 둔
+기본 게임을 씁니다. 여러 게임에 같은 이름의 컨텐츠가 있으면 명시해야 합니다.
+
+게임 이름은 `profiles/` 의 프로파일과 대조되므로 오타는 거부됩니다.
 
 `--status empty` 는 사실상 **되돌리기**입니다. 잘못 기록했거나 사용자가 답을
 바꾸면 이걸로 슬롯을 다시 열 수 있습니다. 이미 그 근거로 만든 TC는 **지우지

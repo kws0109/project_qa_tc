@@ -405,6 +405,26 @@ def test_slot_has_no_command_that_removes_a_slot():
     assert set(_subparser_choices(top["slot"])) == {"status", "init", "set", "add"}
 
 
+def test_skill_tells_the_model_about_the_default_game():
+    """기본 게임이 있으면 게임을 되묻지 않아야 한다.
+
+    이 문장이 없으면 모델은 신규 컨텐츠마다 `--game` 을 물어보고, 사용자는
+    `config --game` 을 설정한 보람이 없어진다.
+    """
+    text = SKILL.read_text(encoding="utf-8")
+    assert "qatc config --game" in text
+    assert "기본 게임" in text
+
+
+def test_readme_documents_the_default_game():
+    from pathlib import Path
+
+    readme = Path(__file__).resolve().parent.parent / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    assert "config --game" in text
+    assert "기본 게임" in text
+
+
 def test_slot_init_is_additive_and_keeps_wrongly_guessed_type_slots(cfg_env, capsys):
     """문서가 근거로 드는 동작을 실제로 실행해 확인한다.
 
