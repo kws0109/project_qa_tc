@@ -11,11 +11,13 @@
     qatc tc list 파티편성                 TC + 미충족 항목
     qatc export 파티편성                  xlsx 출력
     qatc config                          설정 확인
+    qatc app                             3분할 앱을 띄운다 (트리·채팅·TC 검토)
 """
 
 from __future__ import annotations
 
 import argparse
+import socket
 import sqlite3
 import sys
 from pathlib import Path
@@ -66,6 +68,55 @@ def cmd_config(args: argparse.Namespace, cfg: AppConfig) -> int:
     return 0
 
 
+def _find_open_port(start: int, *, limit: int = 50) -> int:
+    """`start` 부터 순서대로 비어 있는 포트를 찾아 돌려준다.
+
+    `qatc app` 은 항상 127.0.0.1 에만 묶이므로 그 주소로만 확인한다. 소켓을
+    잠깐 열어 bind 만 해 보고 바로 닫는 방식이라, 확인 직후 다른 프로세스가
+    그 포트를 먼저 가져가는 경합은 이론상 남지만 로컬 1인용 CLI 에서는
+    무시할 수준이다.
+    """
+    for port in range(start, start + limit):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            continue
+        else:
+            return port
+        finally:
+            probe.close()
+    raise SystemExit(
+        f"{start}번부터 {limit}개 포트가 모두 사용 중입니다. "
+        "다른 프로그램을 종료하거나 --port 로 다른 번호를 지정하세요."
+    )
+
+
+def cmd_app(args: argparse.Namespace, cfg: AppConfig) -> int:
+    """3분할 웹앱을 띄우고 기본 브라우저로 연다.
+
+    `--port` 가 이미 다른 프로세스에 물려 있으면(이전에 띄운 `qatc app`,
+    다른 로컬 서버 등) 다음 포트로 자동으로 넘어간다. 그 경우에도, 그리고
+    아닌 경우에도 **실제로 뜬 주소를 여기서 직접 알린다** — 이 알림을
+    `qatc.app.server.run()` 내부의 로그에만 맡기면, 그 함수를 통째로 갈아
+    끼우는 테스트에서는 이 요구사항이 전혀 검증되지 않는다. 사용자에게
+    8765 라고 말해 놓고 실제로는 8766 에서 떠 있으면, 브라우저에 아무것도
+    안 뜨는 걸 보고 "고장났다" 고 오해하게 된다.
+    """
+    import webbrowser
+
+    from .app.server import run as run_app
+
+    port = _find_open_port(args.port)
+    if port != args.port:
+        _p(f"포트 {args.port} 은(는) 이미 사용 중입니다 — {port} 번으로 대신 띄웁니다.")
+    url = f"http://127.0.0.1:{port}"
+    _p(f"브라우저를 엽니다 — {url}")
+    webbrowser.open(url)
+    run_app(cfg, port=port)
+    return 0
+
+
 # ---------------------------------------------------------------- 파서
 
 
@@ -93,6 +144,11 @@ def build_parser() -> argparse.ArgumentParser:
     cf = sub.add_parser("config", help="설정 확인")
     cf.add_argument("--game", "-g", help="기본 게임을 설정한다 (이후 --game 생략 가능)")
     cf.set_defaults(func=cmd_config)
+
+    ap = sub.add_parser("app", help="3분할 앱을 띄운다")
+    ap.add_argument("--port", type=int, default=8765,
+                     help="사용할 포트 (기본값 8765). 이미 쓰이고 있으면 다음 포트로 넘어간다")
+    ap.set_defaults(func=cmd_app)
 
     return parser
 

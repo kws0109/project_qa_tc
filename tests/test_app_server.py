@@ -1,4 +1,8 @@
-"""라우트·SSE·오류. Flask test client 로만 돈다."""
+"""라우트·SSE·오류. Flask test client 로만 돈다.
+
+파일 끝의 `qatc app` 절만 예외 — CLI 진입점(포트 찾기·브라우저 열기)을 다루므로
+Flask test client 를 쓰지 않는다.
+"""
 
 import json
 
@@ -186,3 +190,73 @@ def test_the_page_loads_nothing_from_the_network(app):
     html = app.test_client().get("/").get_data(as_text=True)
     assert "http://" not in html
     assert "https://" not in html
+
+
+# ---------------------------------------------------------------- `qatc app`
+
+
+def test_app_command_is_registered():
+    from qatc.cli import build_parser
+    assert "app" in build_parser()._subparsers._group_actions[0].choices
+
+
+def test_app_launches_the_server_and_opens_the_browser_at_the_requested_port(
+    monkeypatch, tmp_path, capsys
+):
+    """기본 포트가 비어 있으면 그 포트 그대로 서버를 띄우고 브라우저를 연다.
+
+    `qatc.app.server.run` 과 `webbrowser.open` 을 둘 다 스텁으로 바꾼다 —
+    진짜 `run` 은 포그라운드에서 영원히 블로킹하는 개발 서버고, 진짜
+    `webbrowser.open` 은 실제 브라우저 창을 띄운다. 둘 다 테스트에서 그대로
+    부르면 안 된다.
+    """
+    from qatc.cli import build_parser, cmd_app
+
+    calls = {}
+    monkeypatch.setattr("webbrowser.open", lambda url: calls.setdefault("browser_url", url))
+    monkeypatch.setattr("qatc.app.server.run",
+                         lambda cfg, port: calls.setdefault("run_port", port))
+
+    cfg = AppConfig(knowledge_root=str(tmp_path / "k"), profiles_dir=str(tmp_path / "p"))
+    args = build_parser().parse_args(["app", "--port", "8765"])
+    assert cmd_app(args, cfg) == 0
+
+    assert calls["run_port"] == 8765
+    assert calls["browser_url"] == "http://127.0.0.1:8765"
+    assert "8765" in capsys.readouterr().out
+
+
+def test_app_falls_back_to_the_next_port_when_the_default_is_taken(
+    monkeypatch, tmp_path, capsys
+):
+    """8765 가 이미 열려 있으면 8766 으로 넘어가고, **그 사실과 실제 주소를 알린다.**
+
+    사용자에게 8765 라고 말해 놓고 실제로는 다른 포트에서 뜨면, 브라우저에
+    아무것도 안 뜨는 걸 보고 "고장났다" 고 오해한다 — 이 테스트가 지키는
+    불변식이다. 포트가 쓰이고 있는지는 진짜 소켓으로 점유한다 — bind 를
+    스텁으로 흉내 내면 `_find_open_port` 가 실제 OS 오류를 어떻게 다루는지는
+    검증하지 못한다.
+    """
+    import socket
+
+    from qatc.cli import build_parser, cmd_app
+
+    occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    occupied.bind(("127.0.0.1", 8765))
+    occupied.listen(1)
+    try:
+        calls = {}
+        monkeypatch.setattr("webbrowser.open", lambda url: calls.setdefault("browser_url", url))
+        monkeypatch.setattr("qatc.app.server.run",
+                             lambda cfg, port: calls.setdefault("run_port", port))
+
+        cfg = AppConfig(knowledge_root=str(tmp_path / "k"), profiles_dir=str(tmp_path / "p"))
+        args = build_parser().parse_args(["app", "--port", "8765"])
+        assert cmd_app(args, cfg) == 0
+
+        assert calls["run_port"] == 8766
+        assert calls["browser_url"] == "http://127.0.0.1:8766"
+        out = capsys.readouterr().out
+        assert "8765" in out and "8766" in out
+    finally:
+        occupied.close()

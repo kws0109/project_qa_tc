@@ -545,6 +545,13 @@ def test_readme_documents_the_default_game():
     )
 
 
+def test_readme_documents_the_app_command():
+    from pathlib import Path
+    text = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+    assert "qatc app" in text
+    assert "브라우저" in text
+
+
 def test_readme_typo_claim_matches_what_both_command_families_do(cfg_env, capsys):
     """README 의 "오타는 거부된다 — 막는 방식은 둘" 을 실행해 확인한다.
 

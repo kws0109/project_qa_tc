@@ -65,6 +65,7 @@ qatc knowledge --game starrail                          # 게임별 컨텐츠 �
 qatc export <컨텐츠>                                     # xlsx 출력
 qatc config                                              # 설정·프로파일 확인
 qatc config --game starrail                              # 기본 게임 설정 (이후 --game 생략 가능)
+qatc app                                                 # 3분할 앱을 브라우저로 띄운다
 ```
 
 `--game` 은 두 가지 방법으로 생략할 수 있습니다. **읽기 명령**(`slot status`,
@@ -86,6 +87,41 @@ qatc config --game starrail                              # 기본 게임 설정 
 `--status empty` 는 사실상 **되돌리기**입니다. 잘못 기록했거나 사용자가 답을
 바꾸면 이걸로 슬롯을 다시 열 수 있습니다. 이미 그 근거로 만든 TC는 **지우지
 않고** `tc list` 와 xlsx에서 `근거 철회됨` 으로 표시됩니다.
+
+---
+
+## `qatc app` — 3분할 화면
+
+```bash
+qatc app                 # 기본 포트(8765) — 로컬 서버를 띄우고 브라우저를 엽니다
+qatc app --port 9000     # 다른 포트를 지정
+```
+
+브라우저 한 창에 왼쪽 트리(게임 > 컨텐츠 > 계열 > TC), 가운데 채팅(claude 세션과
+대화하며 슬롯을 채우는 창구), 오른쪽 TC 검토(선택한 TC의 절차·기대결과·근거 슬롯,
+[엑셀로 열기] 버튼) 세 칸을 띄웁니다. 이 화면 자체는 지식 DB에 아무것도 쓰지
+않습니다 — 슬롯과 TC를 바꾸는 유일한 경로는 가운데 채팅이 여는 `claude` 세션입니다.
+
+`--port` 가 이미 다른 프로세스에 쓰이고 있으면 다음 포트로 자동으로 넘어가고,
+실제로 어느 주소에 떴는지 화면에 남깁니다 (8765 가 이미 쓰이던 상태에서 실행한
+실제 출력):
+
+```
+$ qatc app --port 8765
+포트 8765 은(는) 이미 사용 중입니다 — 8766 번으로 대신 띄웁니다.
+브라우저를 엽니다 — http://127.0.0.1:8766
+QATC 앱 — http://127.0.0.1:8766
+```
+
+`qatc app --help` 실제 출력:
+
+```
+usage: qatc app [-h] [--port PORT]
+
+options:
+  -h, --help   show this help message and exit
+  --port PORT  사용할 포트 (기본값 8765). 이미 쓰이고 있으면 다음 포트로 넘어간다
+```
 
 ---
 
