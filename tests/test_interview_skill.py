@@ -193,8 +193,15 @@ def test_skill_says_the_game_name_comes_from_the_user(cfg_env):
     """`<게임>` 을 어떻게 정하는지 1단계가 말해야 한다.
 
     1단계는 `--game` 없이 `slot status` 를 부른 뒤 곧바로
-    `slot init ... --game <게임>` 을 요구한다. 출처가 없으면 모델이 추측하는데,
-    `--game` 은 `profiles/` 와 대조되지 않으므로 오타가 조용히 새 DB를 만든다.
+    `slot init ... --game <게임>` 을 요구한다. 출처가 없으면 모델이 추측한다.
+
+    **이 도크스트링의 원래 근거는 이제 거짓이다** — "`--game` 은 `profiles/` 와
+    대조되지 않으므로 오타가 조용히 새 DB를 만든다" 는 이 브랜치가 고친 두 결함을
+    그대로 주장하고 있었다. 지금은 생성 명령이 대조하고, 읽기 명령은 없는 DB
+    파일을 만들지 않는다. 그래도 이 테스트는 남는다: 오타가 거부된다는 것이
+    **모델이 게임 이름을 지어내도 된다는 뜻은 아니기 때문**이다. 추측이 우연히
+    등록된 다른 게임 이름과 맞으면 CLI 는 아무 이의도 제기하지 않고, 인터뷰는
+    엉뚱한 DB 에 쌓인다. 출처는 사용자여야 한다.
     """
     text = SKILL.read_text(encoding="utf-8")
     step1 = text[text.index("## 1단계"):text.index("## 2단계")]
@@ -329,6 +336,17 @@ def test_design_doc_slot_table_matches_the_base_slot_set():
 
 def _step1(text: str) -> str:
     return text[text.index("## 1단계"):text.index("## 2단계")]
+
+
+def _flat(text: str) -> str:
+    """줄바꿈을 접어 한 줄로 만든다.
+
+    마크다운 산문은 줄 폭에 맞춰 감싸므로, 문장을 그대로 대조하려면 어디서
+    감쌌는지까지 테스트가 알아야 한다. 그러면 줄 나누기만 바꿔도 테스트가
+    깨지고, 사람은 단언을 약한 부분 문자열로 낮춰 버린다 — 이 파일이 앞선
+    라운드에서 실제로 겪은 실패 방식이다.
+    """
+    return " ".join(text.split())
 
 
 def _new_content_branch(step1: str) -> str:
@@ -500,3 +518,99 @@ def test_slot_init_is_additive_and_keeps_wrongly_guessed_type_slots(cfg_env, cap
     assert "던전.제한시간" in closed, "재실행이 유형 슬롯의 답을 지웠다"
     assert closed["던전.제한시간"]["value"] == "3분"
     assert closed["던전.제한시간"]["status"] == "filled"
+
+
+# --- 1단계 서두의 세 주장 — 실측과 대조한다 (최종 검토 M6 · M7 · 3절 3번) ----
+#
+# 이 셋은 전부 **변이 생존**이었다. 문장을 정반대로 뒤집어도 스위트가 초록이라,
+# 모델이 따르는 지시가 뒤집혀도 아무도 모른다. 그래서 각 테스트는
+#   (1) 그 주장을 참으로 만드는 명령을 **실제로 실행**하고,
+#   (2) SKILL.md 의 그 문장을 **통째로** 대조한다.
+# 부분 문자열이나 "이 낱말이 없어야 한다" 식 차단 목록은 쓰지 않는다 —
+# 앞선 라운드에서 어떤 의역도 통과시킨 방식이다. 문장을 고치려는 사람은 이
+# 테스트가 실행하는 명령을 다시 읽고, 고친 문장이 여전히 참인지 확인해야 한다.
+
+
+def test_skill_does_not_ask_for_the_game_up_front_and_that_actually_works(
+        cfg_env, capsys):
+    """"미리 묻지 않는다" 가 실제로 가능한지 확인한다 (M7).
+
+    이 문장을 "먼저 물어본다" 로 뒤집어도 스위트가 초록이었다 — 같은 절에
+    정면으로 모순되는 두 지시가 공존하는데도. 여기서는 `--game` 없이
+    **생성과 읽기가 둘 다 되는지**를 실행해서 확인한다.
+    """
+    assert main(["config", "--game", "starrail"]) == 0          # 기본 게임 한 번
+    capsys.readouterr()
+
+    # 생성 — 기본 게임이 있으면 --game 없이 된다
+    assert main(["slot", "init", "파티편성", "--types", "편성"]) == 0
+    capsys.readouterr()
+
+    # 읽기 — 컨텐츠 이름으로 게임을 역추적한다
+    assert main(["slot", "status", "파티편성", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["game"] == "starrail"
+
+    step1 = _step1(SKILL.read_text(encoding="utf-8"))
+    assert "**`<게임>` 은 미리 묻지 않는다.**" in step1
+
+
+def test_a_default_game_does_not_resolve_an_ambiguous_content(cfg_env, capsys):
+    """기본 게임이 있어도 같은 이름이 두 게임에 있으면 CLI 는 **묻는다** (3절 3번).
+
+    SKILL.md 는 "사용자에게 묻는 시점은 … CLI가 게임을 알 수 없다고 답할
+    때뿐이다" 라고 절대 표현으로 적고 있었는데, 두 번째 질문 지점이 같은 절
+    스무 줄 아래에 있었다. 안전한 독해가 틀린 독해였다 — 34행을 믿는 모델은
+    묻지 않고 게임을 **추측**하게 된다.
+
+    읽기 명령은 기본 게임을 아예 쓰지 않는다(`resolve_store` 는 `cfg.default_game`
+    을 보지 않는다). 그 사실을 실행해서 고정하고, 1단계가 두 지점을 모두
+    말하는지 확인한다.
+    """
+    assert main(["config", "--game", "starrail"]) == 0
+    for game in ("starrail", "genshin"):
+        assert main(["slot", "init", "파티편성", "--game", game]) == 0
+    capsys.readouterr()
+
+    assert main(["slot", "status", "파티편성"]) == 1
+    msg = capsys.readouterr().out
+    assert "여러 게임에 있습니다" in msg      # 기본 게임이 해소하지 못했다
+    assert "starrail" in msg and "genshin" in msg
+
+    step1 = _step1(SKILL.read_text(encoding="utf-8"))
+    assert "**묻는 지점은 두 곳이고, 둘 다 CLI가 먼저 말해 준다.**" in step1
+    assert "**기본 게임은 이 경우를 해소하지 못한다**" in step1
+    # 하나뿐이라고 단언하던 옛 문장이 남아 있으면 두 지시가 모순된다
+    assert "때뿐이다" not in step1
+
+
+def test_skill_typo_claim_matches_what_both_command_families_do(cfg_env, capsys):
+    """"오타는 거부된다 — 새 DB 가 생기지 않는다" 를 두 명령군에서 실행해 확인한다 (M6).
+
+    이 문장을 "거부되지 않는다 — 새 DB 가 조용히 생긴다" 로 뒤집어도 초록이었고,
+    **뒤집힌 쪽이 읽기 경로의 진실이었다** (`slot status … --game starrial` 이
+    rc=1 로 끝나면서 `starrial.db` 를 남겼다). 지금은 양쪽 다 거부하지만
+    **막는 방식이 다르므로** 문장도 그렇게 적어야 한다 — 생성 명령은 `profiles/`
+    와 대조하고, 읽기 명령은 없는 DB 파일을 만들지 않는다.
+    """
+    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    capsys.readouterr()
+
+    # (1) 생성 명령 — profiles/ 와 대조해 거부한다
+    assert main(["slot", "init", "신규", "--game", "starrial"]) == 1
+    assert "등록된 게임이 아닙니다" in capsys.readouterr().out
+
+    # (2) 읽기 명령 — 대조하지 않지만 없는 DB 를 만들지 않는다
+    assert main(["slot", "status", "파티편성", "--game", "starrial"]) == 1
+    read_msg = capsys.readouterr().out
+    assert "지식 DB가 없습니다" in read_msg
+    assert "등록된 게임이 아닙니다" not in read_msg     # 대조는 하지 않는다
+
+    assert not (cfg_env / "starrial.db").exists(), "유령 DB 가 생겼다"
+
+    # 마크다운은 줄바꿈으로 감싸므로 문장 비교는 공백을 접어서 한다 —
+    # 안 그러면 줄 나누기만 바꿔도 테스트가 깨져 사람이 단언을 약하게 만든다.
+    step1 = _flat(_step1(SKILL.read_text(encoding="utf-8")))
+    assert "**`--game` 오타는 CLI가 거부한다 — 잘못된 이름으로 새 DB가 생기지 않는다.**" in step1
+    assert ("생성 명령(`slot init` · `knowledge` · `config --game`)은 `profiles/` 와 "
+            "대조하고, 읽기 명령은 대조하지 않는 대신 그 이름의 DB 파일이 없으면 "
+            "만들지 않고 멈춘다") in step1
