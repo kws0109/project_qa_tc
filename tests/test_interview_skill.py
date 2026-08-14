@@ -106,6 +106,15 @@ def test_skill_uses_allowlisted_executable_form():
 # --- 문서가 주장하는 것과 코드가 하는 것 (Minor 15 · 16 · 18 · 20) --------
 
 
+#: 1단계 목록이 세는 문구 개수 → SKILL.md 가 쓰는 두 수사 (관형사 · 명사).
+#:
+#: 산문에 박힌 숫자는 코드가 바뀌어도 따라오지 않는다. 실제로 네 번째 문구가
+#: 생겼는데 목록은 "아래 셋" 이라 적힌 채였고, 그것을 무력화하는 문장도
+#: "세 문구 모두" 라 새 문구를 덮지 못했다. 그래서 실측한 문구 **개수**로
+#: 두 문장을 함께 고정한다.
+_CARDINALS = {2: ("둘", "두"), 3: ("셋", "세"), 4: ("넷", "네"), 5: ("다섯", "다섯")}
+
+
 def test_skill_step1_branches_on_the_real_cli_messages(cfg_env, capsys):
     """1단계 분기는 CLI가 **실제로 내는 문구**를 근거로 갈라져야 한다.
 
@@ -113,8 +122,16 @@ def test_skill_step1_branches_on_the_real_cli_messages(cfg_env, capsys):
     신규 컨텐츠에서 가장 흔한 실제 출력은
     `'X' 컨텐츠를 가진 게임 DB가 없습니다. --game 으로 지정하세요.` 다 —
     **메시지 자신이 정반대(=--game 을 붙여 다시 부르라)를 지시**하므로 모델이
-    턴을 하나 버린다. 세 문구를 실제로 만들어 스킬이 전부 다루는지 확인한다.
+    턴을 하나 버린다. 네 문구를 실제로 만들어 스킬이 전부 다루는지 확인한다.
     문구를 고치면 이 테스트가 깨져 스킬도 함께 고치게 된다.
+
+    **네 번째 케이스가 왜 필요한가.** 유령 DB 수정이 `resolve_store` 에
+    "명시된 게임의 DB 파일이 없으면 만들지 말고 멈춘다" 를 넣으면서 1단계에
+    문구가 하나 늘었는데, 이 테스트는 그것을 만들지 못했다 — 케이스 (3)이
+    `slot init` 으로 `starrail.db` 를 **이미 만든 뒤에** `--game starrail` 을
+    주기 때문이다. 그래서 SKILL.md 가 문구 셋만 아는 채로 초록이었다.
+    네 번째는 **등록은 됐지만 아직 DB 가 없는 게임**을 쓴다 — 사용자가 새 게임
+    이름을 대고 모델이 `--game` 을 붙여 다시 부르는, 실제로 가장 흔한 경로다.
     """
     text = SKILL.read_text(encoding="utf-8")
     seen = []
@@ -129,14 +146,55 @@ def test_skill_step1_branches_on_the_real_cli_messages(cfg_env, capsys):
     assert main(["slot", "status", "신규컨텐츠"]) == 1
     seen.append(capsys.readouterr().out.strip())
 
-    # (3) --game 을 줬는데 그 컨텐츠가 없을 때
+    # (3) --game 을 줬고 **그 게임 DB 는 이미 있을** 때
+    assert (cfg_env / "starrail.db").exists()
     assert main(["slot", "status", "신규컨텐츠", "--game", "starrail"]) == 1
     seen.append(capsys.readouterr().out.strip())
 
-    assert len(set(seen)) == 3, seen      # 정말 서로 다른 세 문구인지
+    # (4) --game 을 줬는데 **그 게임 DB 가 아직 없을** 때 (등록된 게임이다)
+    assert not (cfg_env / "genshin.db").exists()
+    assert main(["slot", "status", "신규컨텐츠", "--game", "genshin"]) == 1
+    seen.append(capsys.readouterr().out.strip())
+    assert not (cfg_env / "genshin.db").exists(), "읽기가 DB 를 만들었다"
+
+    assert len(set(seen)) == 4, seen      # 정말 서로 다른 네 문구인지
     for msg in seen:
-        quoted = msg.replace("'신규컨텐츠'", "'<컨텐츠>'")
+        # 네 번째 문구만 지식 폴더의 절대 경로를 싣는다 — 기계마다 다르므로
+        # SKILL.md 는 `…\<게임>.db` 로 줄여 적는다. 경로를 먼저 치환해야
+        # 그 안의 게임 이름이 두 번 치환되지 않는다.
+        quoted = (msg
+                  .replace("'신규컨텐츠'", "'<컨텐츠>'")
+                  .replace(str(cfg_env / "genshin.db"), "…\\<게임>.db")
+                  .replace("genshin", "<게임>"))
         assert quoted in text, f"SKILL.md 가 다루지 않는 1단계 문구: {quoted!r}"
+
+    # 목록과, `slot init` 지시를 무력화하는 문장이 **같은 개수**를 말해야 한다.
+    # 네 번째 문구는 자기 안에서 `slot init … --game <게임>` 을 실행하라고
+    # 지시하므로 (앞의 셋보다 한 걸음 더 나간다), 무력화 문장의 범위가
+    # 그 문구까지 닿지 않으면 SKILL.md 안에 정반대 지시 둘이 공존한다.
+    step1 = _step1(text)
+    listed, all_of = _CARDINALS[len(seen)]
+    assert f"아래 {listed} 중 하나가 나오면 → 신규 컨텐츠다." in step1, (
+        f"1단계 목록이 실측 문구 {len(seen)}개를 세지 않습니다"
+    )
+    assert f"**{all_of} 문구 모두**" in _flat(step1), (
+        f"`slot init` 을 개괄 뒤로 미루라는 문장이 실측 문구 {len(seen)}개를 "
+        f"덮지 않습니다 — 덮이지 않은 문구는 자기 지시(`slot init` 을 먼저 "
+        f"하라)가 그대로 살아 모델에게 모순된 명령이 된다"
+    )
+
+    # 목록을 설명하는 문장은 **어느 문구가 언제 나오는지**도 옳게 말해야 한다.
+    # 옛 단정문("`--game` 을 붙여 다시 불러도 세 번째 문구가 나올 뿐이다")은
+    # 네 번째 문구가 생긴 순간 거짓이 됐다 — 위 (3)·(4) 가 정확히 그 갈림을
+    # 실행으로 만든다 (DB 가 있으면 세 번째, 없으면 네 번째). 한쪽만 검사하면
+    # 두 설명이 동시에 적힌 모순된 개정을 통과시키므로 양방향으로 고정한다.
+    assert ("**그 게임의 DB가 이미 있으면 세 번째 문구가, 아직 없으면 네 번째 "
+            "문구가 나올 뿐이다.**") in _flat(step1), (
+        "세 번째 문구와 네 번째 문구가 각각 언제 나오는지 1단계가 구분하지 않습니다"
+    )
+    assert "다시 불러도 세 번째 문구가 나올 뿐이다" not in _flat(step1), (
+        "네 번째 문구를 무시하는 옛 단정문이 살아 있습니다"
+    )
 
 
 def test_skill_step1_covers_the_ambiguous_content_message(cfg_env, capsys):
