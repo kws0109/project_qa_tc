@@ -500,9 +500,20 @@ def test_broken_config_stops_every_command_not_just_config(real_config, capsys):
 
 def test_config_game_sets_the_default(cfg_env, capsys):
     assert main(["config", "--game", "starrail"]) == 0
-    capsys.readouterr()
+    out = capsys.readouterr().out
     from qatc.config import AppConfig
     assert AppConfig.load().default_game == "starrail"
+
+    # 계약은 "설정하고 멈춘다" — 확인 한 줄이 게임과 저장 파일을 알려주고 끝나야
+    # 한다. "starrail" 만 찾으면 아래 조회 경로의 프로파일 목록에도 그 글자가
+    # 나오므로 (진단됨) 구분이 안 된다 — 확인 메시지에만 있는 어구로 잡는다.
+    assert "기본 게임 = starrail" in out
+    assert str(AppConfig.config_file()) in out
+
+    # 뒤이어 평범한 조회 경로(전체 설정 덤프)로 흘러 들어가면 안 된다 — 그
+    # 경로에만 나오는 표식으로 확인한다.
+    assert "사용 가능한 프로파일" not in out    # 조회 경로의 프로파일 표 제목
+    assert "지식 폴더" not in out               # 조회 경로에만 찍히는 줄
 
 
 def test_config_game_rejects_an_unregistered_name(cfg_env, capsys):
