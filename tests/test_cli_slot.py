@@ -428,3 +428,53 @@ def test_status_json_skipped_status_distinguishes_empty_unknown_and_na(cfg_env, 
     assert skipped["진입 경로"] == {"family": "진입 경로", "slot": "entry", "status": "empty"}
     # 근거가 있는 계열은 제외 목록에 없다
     assert "정상 경로" not in skipped
+
+
+# --- slot init 의 컨텐츠 이름 (C1) ---------------------------------------
+
+
+@pytest.mark.parametrize("name, label", [("", "빈 문자열"), ("   ", "공백만"),
+                                         ("\t", "탭만")] + INVISIBLE_VALUES[:4],
+                         ids=["empty", "spaces", "tab", "zwsp", "bom", "zwj", "bel"])
+def test_init_rejects_a_content_name_with_no_content(cfg_env, capsys, name, label):
+    """이름이 없는 컨텐츠는 만들지 않는다.
+
+    실측(수정 전): `slot init "" --game X` 가 `[] 슬롯 10개 준비됨 (유형: 없음)`
+    rc=0 으로 끝났다. 이 명령의 호출자는 인자를 조립하는 **모델**이라 빈
+    문자열이 실제로 넘어오고, rc=0 이면 정상 생성으로 읽는다. 그러면
+    `knowledge` 커버리지 표에 이름 없는 행이 남고, 진짜 컨텐츠는 만들어지지
+    않은 채로 인터뷰가 계속된다.
+
+    판정은 근거 검사와 같은 `is_blank` 를 쓴다 — 보이지 않는 문자로 된 이름도
+    사람이 다시 찾을 수 없기는 마찬가지다.
+    """
+    rc = main(["slot", "init", name, "--game", "starrail"])
+    assert rc == 1, label
+    out = capsys.readouterr().out
+    assert "컨텐츠 이름" in out, label
+    assert "qatc slot init" in out, label          # 다음 조치 (올바른 호출 형태)
+
+    # 거부됐으면 DB 파일 자체가 만들어지지 않아야 한다
+    assert not (cfg_env / "starrail.db").exists(), label
+
+
+def test_init_rejecting_a_blank_name_leaves_no_ghost_content(cfg_env, capsys):
+    """거부됐으면 커버리지 표에 이름 없는 행이 남지 않아야 한다."""
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    assert main(["slot", "init", "", "--game", "starrail"]) == 1
+    capsys.readouterr()
+    assert main(["knowledge", "--game", "starrail", "--json"]) == 0
+    contents = [c["content"] for c in json.loads(capsys.readouterr().out)["contents"]]
+    assert contents == ["파티편성"]
+
+
+def test_init_still_accepts_short_and_unusual_but_real_names(cfg_env, capsys):
+    """반대쪽 경계 — 짧거나 특이해도 뜻이 있는 이름은 그대로 만들어야 한다."""
+    for name in ("1", "워프", "A/B 테스트", "v2"):
+        assert main(["slot", "init", name, "--game", "starrail"]) == 0, name
+    capsys.readouterr()
+    assert main(["knowledge", "--game", "starrail", "--json"]) == 0
+    contents = {c["content"] for c in json.loads(capsys.readouterr().out)["contents"]}
+    assert contents == {"1", "워프", "A/B 테스트", "v2"}

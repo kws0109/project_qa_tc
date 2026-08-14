@@ -139,6 +139,18 @@ def cmd_slot_status(args: argparse.Namespace, cfg: AppConfig) -> int:
 
 
 def cmd_slot_init(args: argparse.Namespace, cfg: AppConfig) -> int:
+    # 이름 없는 컨텐츠는 만들지 않는다. 실측: `slot init "" --game X` 가
+    # `[] 슬롯 10개 준비됨` rc=0 으로 끝나 유령 컨텐츠가 커버리지 표에 남았다.
+    # 이 명령의 호출자는 인자를 조립하는 모델이라 빈 문자열이 실제로 넘어오고,
+    # rc=0 이면 정상 생성으로 읽어 인터뷰가 그대로 진행된다.
+    # 판정은 근거 검사와 같은 `is_blank` — 보이지 않는 문자로 된 이름도 사람이
+    # 다시 찾을 수 없기는 마찬가지다.
+    if is_blank(args.content):
+        _p("오류: 컨텐츠 이름이 비어 있습니다 "
+           "(공백·제로폭 문자·제어문자만으로는 이름이 되지 않습니다). "
+           "'qatc slot init <컨텐츠> --game <게임>' 처럼 이름을 지정하세요.")
+        return 1
+
     types = [t.strip() for t in (args.types or "").split(",") if t.strip()]
     store = KnowledgeStore(cfg.knowledge_path / f"{args.game}.db").open()
     try:
