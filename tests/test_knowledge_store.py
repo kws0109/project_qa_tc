@@ -162,8 +162,10 @@ def test_set_slot_rejects_filled_with_invisible_only_value(store, value, label):
     assert got.status is SlotStatus.EMPTY, label
 
 
-@pytest.mark.parametrize("value", ["파티를 짠다", "4", "0", "a", "-", "\u00b1"],
-                         ids=["korean", "digit", "zero", "ascii", "hyphen", "plusminus"])
+@pytest.mark.parametrize("value", ["파티를 짠다", "4", "0", "a", "-", "\u00b1",
+                                   "\uac00\u0301", "e\u0301", "\u2764\ufe0f", "\u28004"],
+                         ids=["korean", "digit", "zero", "ascii", "hyphen", "plusminus",
+                              "hangul-accent", "latin-accent", "emoji-vs16", "braille-digit"])
 def test_set_slot_accepts_short_but_real_values(store, value):
     """반대쪽 경계 — 짧아도 뜻이 있는 값은 그대로 근거다.
 

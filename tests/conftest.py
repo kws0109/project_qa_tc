@@ -15,12 +15,17 @@ from qatc.config import AppConfig
 from qatc.models import Priority, TCKind, TCOrigin, TestCase
 
 
-#: 보이지 않는 문자만으로 이루어진 값들 (BL1).
+#: **비어 보이는** 문자만으로 이루어진 값들 (BL1 · 라운드 1d 에서 넓힘).
+#:
+#: 기준은 "유니코드 범주가 보이지 않는 쪽인가" 가 아니라 **"화면에 아무것도
+#: 그려지지 않는가"** 다. 한글 필러(U+3164 등)는 범주가 `Lo` — 한글·한자와 같은
+#: 범주인데도 빈칸으로 그려지고, 한국어권 게임에서 빈 이름·간격 맞추기에 실제로
+#: 쓰인다. 범주만 보던 라운드 1c 의 목록은 이것들을 전부 놓쳤다.
 #:
 #: 소스에 실제 문자를 넣으면 편집기가 지우거나 diff·리뷰에서 사라지므로 **반드시
-#: 이스케이프로 적는다.** 저장소 계층(`test_knowledge_store.py`)과 CLI 계층
-#: (`test_cli_slot.py`)이 같은 목록을 쓴다 — 한쪽만 늘어나면 두 계층의 방어선이
-#: 갈라진다.
+#: 이스케이프로 적는다.** 저장소 계층(`test_knowledge_store.py`) · CLI 계층
+#: (`test_cli_slot.py`) · 판정 함수 자체(`test_knowledge_models.py`)가 같은 목록을
+#: 쓴다 — 한쪽만 늘어나면 방어선이 갈라진다.
 INVISIBLE_VALUES = [
     ("\u200b", "제로폭 공백"),
     ("\ufeff", "BOM / 제로폭 비분할 공백"),
@@ -29,8 +34,23 @@ INVISIBLE_VALUES = [
     ("\x1b", "C0 제어문자 ESC"),
     ("  \u200b \ufeff \t ", "보통 공백과 섞은 것"),
     ("\u2028", "줄 구분자 Zl"),
+    # --- 라운드 1d: 범주가 `Lo`·`So`·`Mn` 이라 1c 의 범주 목록을 통과하던 것들 ---
+    ("\u3164", "한글 필러 (Lo)"),
+    ("\u115f", "한글 초성 필러 (Lo)"),
+    ("\u1160", "한글 중성 필러 (Lo)"),
+    ("\uffa0", "반각 한글 필러 (Lo)"),
+    ("\u2800", "점자 빈칸 (So)"),
+    ("\ufe0f", "변이 선택자 VS16 (Mn)"),
+    ("\u0301", "홀로 있는 결합 액센트 (Mn)"),
+    ("  \u3164 \u2800 ", "한글 필러·점자 빈칸을 보통 공백과 섞은 것"),
+    ("\u200b\u3164", "제로폭 공백 + 한글 필러"),
 ]
-INVISIBLE_IDS = ["zwsp", "bom", "zwj", "bel", "esc", "mixed", "line-separator"]
+INVISIBLE_IDS = [
+    "zwsp", "bom", "zwj", "bel", "esc", "mixed", "line-separator",
+    "hangul-filler", "choseong-filler", "jungseong-filler", "halfwidth-hangul-filler",
+    "braille-blank", "variation-selector", "combining-accent",
+    "hangul-filler-mixed", "zwsp-hangul-filler",
+]
 
 
 @pytest.fixture()

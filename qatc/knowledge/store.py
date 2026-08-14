@@ -203,7 +203,7 @@ class KnowledgeStore:
         if status is SlotStatus.FILLED and is_blank(value):
             raise ValueError(
                 f"'{key}' 슬롯을 filled 로 기록하려면 내용이 있는 값이 필요합니다 "
-                f"(공백·제로폭 문자·제어문자만으로는 근거가 되지 않습니다). "
+                f"(공백·제로폭 문자·제어문자·한글 필러처럼 빈칸으로 보이는 문자만으로는 근거가 되지 않습니다). "
                 f"내용을 모르면 SlotStatus.UNKNOWN, 해당 없으면 SlotStatus.NA 를 쓰세요."
             )
         current = self.slots(name)

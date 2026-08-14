@@ -147,7 +147,7 @@ def cmd_slot_init(args: argparse.Namespace, cfg: AppConfig) -> int:
     # 다시 찾을 수 없기는 마찬가지다.
     if is_blank(args.content):
         _p("오류: 컨텐츠 이름이 비어 있습니다 "
-           "(공백·제로폭 문자·제어문자만으로는 이름이 되지 않습니다). "
+           "(공백·제로폭 문자·제어문자·한글 필러처럼 빈칸으로 보이는 문자만으로는 이름이 되지 않습니다). "
            "'qatc slot init <컨텐츠> --game <게임>' 처럼 이름을 지정하세요.")
         return 1
 
@@ -176,7 +176,7 @@ def cmd_slot_set(args: argparse.Namespace, cfg: AppConfig) -> int:
     # 지우지 못해, 보이지 않는 문자 하나가 계열을 여는 구멍이 된다.
     if status is SlotStatus.FILLED and is_blank(value):
         _p("오류: --status filled 에는 내용이 있는 --value 가 필요합니다 "
-           "(공백·제로폭 문자·제어문자만으로는 근거가 되지 않습니다). "
+           "(공백·제로폭 문자·제어문자·한글 필러처럼 빈칸으로 보이는 문자만으로는 근거가 되지 않습니다). "
            "내용을 모르면 --status unknown, 해당 없으면 --status na 를 쓰세요.")
         return 1
 

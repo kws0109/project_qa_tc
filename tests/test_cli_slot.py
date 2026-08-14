@@ -301,8 +301,10 @@ def test_set_filled_with_invisible_only_value_is_rejected(cfg_env, capsys, value
     assert planned == [], f"{label}: 보이지 않는 문자가 계열을 열었다 — {planned}"
 
 
-@pytest.mark.parametrize("value", ["소모하지 않는다", "4", "0"],
-                         ids=["korean", "digit", "zero"])
+@pytest.mark.parametrize("value", ["소모하지 않는다", "4", "0",
+                                   "\uac00\u0301", "\u2764\ufe0f", "🔥획득"],
+                         ids=["korean", "digit", "zero",
+                              "hangul-accent", "emoji-vs16", "emoji-with-text"])
 def test_set_filled_accepts_short_but_real_value(cfg_env, capsys, value):
     """반대쪽 경계 — 뜻이 있는 값은 짧아도 그대로 근거가 된다.
 
@@ -434,8 +436,8 @@ def test_status_json_skipped_status_distinguishes_empty_unknown_and_na(cfg_env, 
 
 
 @pytest.mark.parametrize("name, label", [("", "빈 문자열"), ("   ", "공백만"),
-                                         ("\t", "탭만")] + INVISIBLE_VALUES[:4],
-                         ids=["empty", "spaces", "tab", "zwsp", "bom", "zwj", "bel"])
+                                         ("\t", "탭만")] + INVISIBLE_VALUES,
+                         ids=["empty", "spaces", "tab"] + INVISIBLE_IDS)
 def test_init_rejects_a_content_name_with_no_content(cfg_env, capsys, name, label):
     """이름이 없는 컨텐츠는 만들지 않는다.
 
