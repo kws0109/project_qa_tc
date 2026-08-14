@@ -4,6 +4,7 @@ import pytest
 
 from qatc.cli import main
 from qatc.knowledge.store import KnowledgeStore
+from conftest import INVISIBLE_IDS, INVISIBLE_VALUES
 
 
 def test_init_creates_db_and_slots(cfg_env, capsys):
@@ -257,3 +258,71 @@ def test_add_slot_rejects_whitespace_only_family(cfg_env, capsys):
 
     main(["slot", "status", "파티편성", "--json"])
     assert json.loads(capsys.readouterr().out)["total"] == 10
+
+
+# --- 보이지 않는 문자 (BL1) ----------------------------------------------
+
+
+@pytest.mark.parametrize("value, label", INVISIBLE_VALUES, ids=INVISIBLE_IDS)
+def test_set_filled_with_invisible_only_value_is_rejected(cfg_env, capsys, value, label):
+    """제로폭·BOM·제어문자만 있는 `--value` 는 근거가 아니다.
+
+    실측(수정 전): `slot set 중복 cost --status filled --value <U+200B>` 가
+    `✓ cost = filled` rc=0 으로 끝나고, 이어서 `tc plan` 이 `재화 부족` 을
+    **생성 대상 계열로 계획했다.** 보이지 않는 문자 하나가 계열을 연 것이다.
+    라운드 1a 가 Critical 로 막은 구멍이 `strip()` 의 한계(= `isspace()` 인
+    문자만 지운다)를 통해 그대로 다시 열려 있었다.
+    """
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    rc = main(["slot", "set", "파티편성", "cost", "--status", "filled", "--value", value])
+    assert rc == 1, label
+    out = capsys.readouterr().out
+    assert "--value" in out, label
+    # 다음 조치를 알린다 — 모르면 unknown, 해당 없으면 na
+    assert "--status unknown" in out, label
+    assert "--status na" in out, label
+
+    # 근거로 인정되지 않았으니 계열도 열리지 않아야 한다
+    main(["slot", "status", "파티편성", "--json"])
+    assert json.loads(capsys.readouterr().out)["filled"] == 0, label
+    main(["tc", "plan", "파티편성", "--json"])
+    planned = [p["family"] for p in json.loads(capsys.readouterr().out)["planned"]]
+    assert planned == [], f"{label}: 보이지 않는 문자가 계열을 열었다 — {planned}"
+
+
+@pytest.mark.parametrize("value", ["소모하지 않는다", "4", "0"],
+                         ids=["korean", "digit", "zero"])
+def test_set_filled_accepts_short_but_real_value(cfg_env, capsys, value):
+    """반대쪽 경계 — 뜻이 있는 값은 짧아도 그대로 근거가 된다.
+
+    `"4"`(정원 4명) 같은 정당한 한 글자 답변까지 막으면 인터뷰가 진행되지 않는다.
+    """
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
+
+    assert main(["slot", "set", "파티편성", "cost",
+                 "--status", "filled", "--value", value]) == 0
+    capsys.readouterr()          # 기록 확인 문구를 버린다
+    main(["slot", "status", "파티편성", "--json"])
+    data = json.loads(capsys.readouterr().out)
+    assert data["filled"] == 1
+    assert {"key": "cost", "status": "filled", "value": value} in data["closed"]
+    main(["tc", "plan", "파티편성", "--json"])
+    planned = [p["family"] for p in json.loads(capsys.readouterr().out)["planned"]]
+    assert planned == ["재화 부족"]
+
+
+@pytest.mark.parametrize("status", ["unknown", "na", "empty"])
+@pytest.mark.parametrize("value", ["\u200b", "\ufeff", "\x07", "   "],
+                         ids=["zwsp", "bom", "bel", "spaces"])
+def test_unknown_na_empty_ignore_the_invisible_check(cfg_env, capsys, status, value):
+    """보이지 않는 문자 검사가 FILLED 밖으로 새면 인터뷰가 멈춘다.
+
+    `--status unknown` 은 값이 없는 것이 정상 사용법이고, 모델이 습관적으로
+    `--value ""` 를 함께 보내기도 한다.
+    """
+    main(["slot", "init", "파티편성", "--game", "starrail"])
+    assert main(["slot", "set", "파티편성", "cost",
+                 "--status", status, "--value", value]) == 0

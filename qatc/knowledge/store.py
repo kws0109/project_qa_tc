@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Sequence
 
 from ..models import TCOrigin, TestCase, new_id
-from .models import Content, Slot, SlotStatus
+from .models import Content, Slot, SlotStatus, is_blank
 from .slots import build_slot_set
 
 _SCHEMA = """
@@ -196,10 +196,14 @@ class KnowledgeStore:
         "아무 내용도 없는 근거" 로 인정돼 근거 없는 TC를 만든다. CLI 에도 같은
         검사가 있지만 게이트와 같은 계층인 여기서도 막아야 CLI 밖 호출자가
         우회하지 못한다.
+
+        "빈 값" 의 판정은 :func:`is_blank` 가 한다 — `value.strip()` 은 제로폭
+        공백·BOM·제어문자를 하나도 지우지 않아 같은 구멍이 다시 열린다.
         """
-        if status is SlotStatus.FILLED and not value.strip():
+        if status is SlotStatus.FILLED and is_blank(value):
             raise ValueError(
-                f"'{key}' 슬롯을 filled 로 기록하려면 값이 필요합니다. "
+                f"'{key}' 슬롯을 filled 로 기록하려면 내용이 있는 값이 필요합니다 "
+                f"(공백·제로폭 문자·제어문자만으로는 근거가 되지 않습니다). "
                 f"내용을 모르면 SlotStatus.UNKNOWN, 해당 없으면 SlotStatus.NA 를 쓰세요."
             )
         current = self.slots(name)

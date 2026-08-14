@@ -26,7 +26,7 @@ from .knowledge.gate import (
     validate_family,
     withdrawn_families,
 )
-from .knowledge.models import SlotStatus
+from .knowledge.models import SlotStatus, is_blank
 from .knowledge.slots import KNOWN_TYPES
 from .knowledge.store import KnowledgeStore
 from .models import Priority, TCOrigin, TestCase
@@ -160,8 +160,11 @@ def cmd_slot_set(args: argparse.Namespace, cfg: AppConfig) -> int:
     # 빈 근거를 FILLED 로 받으면 게이트가 그것을 근거로 인정한다. DB를 열기 전에
     # 막고, 다음 조치(모른다 / 해당 없음)를 함께 알린다 — 이 명령의 호출자는
     # 인터뷰를 진행하는 모델이라 "안 됩니다"만으로는 무엇을 할지 모른다.
-    if status is SlotStatus.FILLED and not value.strip():
-        _p("오류: --status filled 에는 --value 가 필요합니다. "
+    # 판정은 `is_blank` 가 한다: `value.strip()` 은 제로폭 공백·BOM·제어문자를
+    # 지우지 못해, 보이지 않는 문자 하나가 계열을 여는 구멍이 된다.
+    if status is SlotStatus.FILLED and is_blank(value):
+        _p("오류: --status filled 에는 내용이 있는 --value 가 필요합니다 "
+           "(공백·제로폭 문자·제어문자만으로는 근거가 되지 않습니다). "
            "내용을 모르면 --status unknown, 해당 없으면 --status na 를 쓰세요.")
         return 1
 

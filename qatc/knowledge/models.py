@@ -7,8 +7,34 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
+
+#: 뜻을 나르지 않는 문자의 유니코드 일반 범주.
+#:
+#: `Cc` 제어문자 · `Cf` 서식문자(제로폭 공백·BOM·제로폭 결합자) ·
+#: `Zs`/`Zl`/`Zp` 구분자. 이 밖의 범주를 가진 문자는 무엇이든 뜻이 있다고 본다
+#: (한글 `Lo`, 숫자 `Nd`, 기호 `Sm` …) — 화이트리스트가 아니라 블랙리스트인
+#: 이유는, 모르는 문자가 나왔을 때 "근거 없음"이 아니라 "근거 있음"으로 기우는
+#: 편이 사용자의 답변을 잃지 않기 때문이다.
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Zs", "Zl", "Zp"})
+
+
+def is_blank(text: str) -> bool:
+    """이 문자열에 **뜻을 나르는 문자가 하나도 없는가.**
+
+    `not text.strip()` 으로는 부족하다. `str.strip()` 은 `isspace()` 인 문자만
+    지우므로 제로폭 공백(U+200B) · BOM/제로폭 비분할 공백(U+FEFF) · 제로폭
+    결합자(U+200D) · C0 제어문자는 **하나도 지우지 않는다.** 실측: `slot set
+    ... --status filled --value <U+200B>` 가 `✓ cost = filled` rc=0 으로 통과해
+    `tc plan` 이 그 계열을 생성 대상으로 계획했다 — 보이지 않는 문자 하나가
+    "근거 없는 TC는 만들어지지 않는다" 를 뚫은 것이다.
+
+    붙여넣기 텍스트의 BOM·제로폭 문자는 실제로 흔하고, 이 검사는 설계상
+    **최후 방어선**이라 확률이 아니라 구멍의 유무로 심각도가 정해진다.
+    """
+    return all(unicodedata.category(ch) in _INVISIBLE_CATEGORIES for ch in text)
 
 
 class SlotStatus(str, Enum):

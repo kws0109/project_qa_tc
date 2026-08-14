@@ -15,6 +15,24 @@ from qatc.config import AppConfig
 from qatc.models import Priority, TCKind, TCOrigin, TestCase
 
 
+#: 보이지 않는 문자만으로 이루어진 값들 (BL1).
+#:
+#: 소스에 실제 문자를 넣으면 편집기가 지우거나 diff·리뷰에서 사라지므로 **반드시
+#: 이스케이프로 적는다.** 저장소 계층(`test_knowledge_store.py`)과 CLI 계층
+#: (`test_cli_slot.py`)이 같은 목록을 쓴다 — 한쪽만 늘어나면 두 계층의 방어선이
+#: 갈라진다.
+INVISIBLE_VALUES = [
+    ("\u200b", "제로폭 공백"),
+    ("\ufeff", "BOM / 제로폭 비분할 공백"),
+    ("\u200d", "제로폭 결합자"),
+    ("\x07", "C0 제어문자 BEL"),
+    ("\x1b", "C0 제어문자 ESC"),
+    ("  \u200b \ufeff \t ", "보통 공백과 섞은 것"),
+    ("\u2028", "줄 구분자 Zl"),
+]
+INVISIBLE_IDS = ["zwsp", "bom", "zwj", "bel", "esc", "mixed", "line-separator"]
+
+
 @pytest.fixture()
 def cfg_env(tmp_path, monkeypatch):
     """`AppConfig.load()` 가 임시 디렉터리만 보게 만든다. 반환값은 knowledge 루트.
