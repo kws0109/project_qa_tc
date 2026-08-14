@@ -83,6 +83,74 @@ def test_chat_auth_error_reaches_the_browser(app, monkeypatch):
     assert "재인증" in text
 
 
+def test_sse_frame_ends_with_a_blank_line(app, monkeypatch):
+    """프레임은 정확히 `event: <kind>\\ndata: <json>\\n\\n` 모양이어야 한다.
+
+    브라우저의 `EventSource`는 빈 줄(연속된 개행 두 번)을 프레임 경계로
+    본다 — 그 경계가 없으면 텍스트는 도착해도 이벤트로 분배되지 않는다.
+    `"event: delta" in text` 처럼 부분 문자열만 보는 검사로는 종결자가
+    `\\n\\n`에서 `\\n`으로 뭉개져도 여전히 통과한다(이 회귀를 놓친 자리).
+    이벤트를 하나만 흘려서 전체 응답 바이트를 통째로 비교한다.
+    """
+    from qatc.app import chat as chat_mod
+
+    def fake_stream(cfg, message, content, **kw):
+        yield chat_mod.ChatEvent("delta", {"text": "안"})
+
+    monkeypatch.setattr("qatc.app.server.stream_turn", fake_stream)
+    r = app.test_client().post("/api/chat", json={"message": "x", "content": None})
+    text = r.get_data(as_text=True)
+    expected_data = json.dumps({"text": "안"}, ensure_ascii=False)
+    assert text == f"event: delta\ndata: {expected_data}\n\n"
+
+
+def test_export_writes_a_real_xlsx_and_returns_its_path(app, tmp_path, monkeypatch):
+    """성공 경로 — 실제 xlsx 파일이 생기고, 그 경로가 응답에 그대로 실린다.
+
+    `os.startfile`은 진짜로 부르면 Excel 창을 띄우므로 가짜로 바꿔 둔다.
+    """
+    import qatc.app.server as server_mod
+    from qatc.models import Priority, TCKind, TCOrigin, TestCase
+
+    db = tmp_path / "k" / "starrail.db"
+    with KnowledgeStore(db) as st:
+        tc = TestCase(id="", category_minor="정상 경로", title="TC",
+                      steps=["1"], expected=["e"], priority=Priority.HIGH,
+                      kind=TCKind.HAPPY_PATH, origin=TCOrigin.INTERVIEW)
+        st.add_testcase("파티편성", "정상 경로", tc, ["core_action"])
+
+    started = {}
+    monkeypatch.setattr(server_mod.os, "startfile",
+                         lambda p: started.setdefault("path", p), raising=False)
+
+    r = app.test_client().post("/api/export", json={"game": "starrail", "content": "파티편성"})
+    assert r.status_code == 200
+    body = r.get_json()
+    from pathlib import Path
+    path = Path(body["path"])
+    assert path.exists()
+    assert path.suffix == ".xlsx"
+    assert Path(started["path"]) == path
+
+
+def test_export_blocked_file_reports_the_korean_message_not_a_class_name(app, monkeypatch):
+    """잠긴 파일 경로 — `ExportBlocked`의 한국어 문장이 그대로, 예외 이름 없이."""
+    from qatc.export.tc_excel import ExportBlocked
+
+    msg = ("파일에 쓸 수 없습니다 — C:\\아무경로\\starrail_파티편성_TC.xlsx. "
+           "Excel에서 이 파일을 닫고 다시 시도하세요.")
+
+    def fake_export(*args, **kwargs):
+        raise ExportBlocked(msg)
+
+    monkeypatch.setattr("qatc.app.server.export_tc_excel", fake_export)
+    r = app.test_client().post("/api/export", json={"game": "starrail", "content": "파티편성"})
+    assert r.status_code == 409
+    body = r.get_json()
+    assert body["error"] == msg
+    assert "ExportBlocked" not in body["error"]
+
+
 def test_the_backend_never_writes_to_the_knowledge_db(app):
     """앱이 게이트를 우회할 수 없다는 것이 이 설계의 중심 성질이다.
 

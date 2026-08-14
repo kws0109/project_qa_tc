@@ -128,4 +128,11 @@ def run(cfg: AppConfig, port: int = 8765) -> None:
     """개발용 로컬 서버를 포그라운드에서 띄운다."""
     app = create_app(cfg)
     _p(f"QATC 앱 — http://127.0.0.1:{port}")
-    app.run(host="127.0.0.1", port=port)
+    # threaded=True 가 빠지면 Werkzeug 개발 서버가 한 번에 요청을 하나만
+    # 처리한다. `/api/chat` 은 턴이 끝날 때까지(수 초~수십 초) 응답을 계속
+    # 흘려보내는 SSE 라서, 그 동안 같은 프로세스로 오는 `/api/tree`·
+    # `/api/content`·`/api/health` 요청이 전부 그 스트림이 끝날 때까지
+    # 멈춘다 — 채팅 중엔 트리·검토 패널이 죽은 것처럼 보인다. Flask test
+    # client 는 동시 요청 없이 동기적으로만 도므로 이 플래그를 빼도 어떤
+    # 테스트도 못 잡는다 — 장식처럼 보여도 지우면 이 회귀가 조용히 돌아온다.
+    app.run(host="127.0.0.1", port=port, threaded=True)
