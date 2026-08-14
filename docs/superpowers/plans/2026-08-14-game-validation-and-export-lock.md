@@ -99,9 +99,15 @@ def test_known_games_lists_profile_keys_sorted(tmp_path):
     assert known_games(cfg) == ["genshin", "starrail"]
 
 
-def test_registered_game_passes(tmp_path):
+def test_registered_game_passes_without_the_skip_warning(tmp_path, capsys):
+    """등록된 이름은 통과한다 — 그리고 **검증을 건너뛴 것이 아니어야 한다.**
+
+    단언 없이 `validate_game(cfg, "starrail")` 만 부르면 검증을 통째로 없앤
+    뮤테이션에서도 통과한다. 경고가 없다는 것이 "실제로 대조했다"의 증거다.
+    """
     cfg = _cfg(tmp_path, ["starrail"])
-    validate_game(cfg, "starrail")      # 예외가 없으면 통과
+    assert validate_game(cfg, "starrail") is None
+    assert "건너뜁니다" not in capsys.readouterr().out
 
 
 def test_typo_is_rejected_and_lists_the_valid_names(tmp_path):
