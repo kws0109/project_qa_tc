@@ -2,9 +2,10 @@ import json
 
 import pytest
 
-from qatc.cli import main
-from qatc.knowledge.store import KnowledgeStore
 from conftest import INVISIBLE_IDS, INVISIBLE_VALUES
+from qatc.cli import main
+from qatc.knowledge.gate import FAMILY_META
+from qatc.knowledge.store import KnowledgeStore
 
 
 def test_init_creates_db_and_slots(cfg_env, capsys):
@@ -152,11 +153,17 @@ def test_add_slot_appends(cfg_env, capsys):
 
 
 def test_add_slot_rejects_unregistered_family(cfg_env, capsys):
-    """오타 계열은 `slot add` 에서 막는다.
+    """오타 계열은 `slot add` 에서 막고, **유효한 이름 전부와 다음 조치**를 알린다.
 
     `--family 중단됨`(등록된 `중단` 의 오타)이 통과하면 `tc plan` 이 그 계열을
     계획하고 `FAMILY_META` 폴백으로 **의도한 INTERRUPT 대신 HAPPY_PATH / Medium
     을 조용히 배정**한다. rc=0 이라 아무도 눈치채지 못한다.
+
+    예전 판의 셋째 단언은 `"중단" in out` 이었는데, 이는 둘째 단언
+    (`"중단됨" in out`)의 **부분문자열이라 공짜였다** — 메시지가 계열 목록과
+    다음 조치를 통째로 잃어도 초록으로 남았다. 이 명령의 호출자는 인터뷰를
+    진행하는 모델이고, 목록이 없으면 무엇으로 고쳐야 할지 알 수 없다. 그래서
+    `FAMILY_META` 를 진실 원천으로 삼아 정렬된 전체 목록과 다음 조치를 고정한다.
     """
     main(["slot", "init", "파티편성", "--game", "starrail"])
     capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
@@ -164,8 +171,10 @@ def test_add_slot_rejects_unregistered_family(cfg_env, capsys):
                "--hint", "통신이 끊기면", "--family", "중단됨"])
     assert rc == 1
     out = capsys.readouterr().out
-    assert "중단됨" in out
-    assert "중단" in out          # 유효한 계열 목록을 알려준다 (다음 조치)
+    assert "등록되지 않은 계열 '중단됨'" in out       # 무엇이 틀렸는지
+    # 정의된 계열 **전부**를 알려준다. 부분문자열로 통과하지 못하도록 한 덩어리로 본다.
+    assert f"정의된 계열: {', '.join(sorted(FAMILY_META))}" in out
+    assert "--family 에 쓰세요" in out                # 다음 조치
 
     # 거부됐으면 분모가 늘지 않아야 한다
     main(["slot", "status", "파티편성", "--json"])
