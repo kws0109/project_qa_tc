@@ -94,6 +94,9 @@ def test_locked_target_raises_export_blocked_with_next_action(tmp_path):
         assert str(out) in msg                       # 어느 파일인지
         assert "Excel" in msg and "닫" in msg        # 다음 조치
         assert "PermissionError" not in msg          # 예외 이름을 노출하지 않는다
+        # 원인 체인이 보존돼야 원인 규명이 가능하다 (`from exc`) — 타입까지
+        # 확인해야 `from None` 이나 엉뚱한 예외로 체이닝해도 잡아낸다.
+        assert isinstance(e.value.__cause__, PermissionError)
     finally:
         os.chmod(out, stat.S_IWRITE)                 # 다른 테스트를 위해 되돌린다
 

@@ -629,6 +629,13 @@ def test_export_on_a_locked_file_tells_the_user_to_close_excel(cfg_env, capsys):
         rc = main(["export", "잠김"])
         out = capsys.readouterr().out
         assert rc == 1
+        # 예외 클래스 이름을 하나씩 나열해 부재를 확인하는 방식은 이름 목록에
+        # 없는 예외(예: cmd_export 안의 다른 버그가 낸 UnboundLocalError)가
+        # cli.py 의 범용 폴백을 타면 그대로 새어나가도 잡아내지 못한다 —
+        # 실제로 그런 뮤테이션이 기존의 이름 나열 단언 4개를 전부 통과시켰다.
+        # 진짜 불변 조건은 "실패한 명령은 원인이 무엇이든 오류 줄을 정확히
+        # 하나만 찍는다" 이므로 그것을 구조적으로 확인한다.
+        assert out.count("오류:") == 1
         assert "Excel" in out and "닫" in out
         assert "PermissionError" not in out
         assert "ExportBlocked" not in out
