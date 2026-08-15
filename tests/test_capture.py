@@ -65,6 +65,18 @@ def test_both_clues_must_match_when_both_are_given():
     assert got.handle == 2
 
 
+def test_a_malformed_title_regex_is_a_korean_capture_error_not_a_traceback():
+    """`window_title_regex` 는 사용자가 YAML 을 손으로 고친 값이다 - 문법이
+    깨지면 `re.search` 가 `re.error` 를 던진다. 그것이 `CaptureError` 로
+    바뀌지 않으면 라우트의 `except CaptureError` 를 비껴가 500 트레이스백이
+    된다."""
+    with pytest.raises(CaptureError) as e:
+        select_window([_w()], _p(process="", title_regex="(unclosed["))
+    assert e.value.kind == "no_window_config"
+    assert "starrail" in e.value.message      # 어느 프로파일 파일인지
+    assert "title_regex" in e.value.message
+
+
 def test_no_match_says_the_game_is_not_running():
     with pytest.raises(CaptureError) as e:
         select_window([_w(process="chrome.exe")], _p())

@@ -402,6 +402,9 @@ def test_no_read_endpoint_changes_a_single_byte_of_the_knowledge_root(app, monke
         "message": "이 화면이에요",
         "images": [{"data": _b64(_png()), "media_type": "image/png"}],
     }).get_data()
+    # 캡처도 지식 루트를 건드리지 않는다. OS 는 스텁한다.
+    monkeypatch.setattr("qatc.app.server.list_windows", lambda: [])
+    c.post("/api/capture", json={"game": "starrail"}).get_data()
 
     after = _snapshot(root)
     assert after == before, (
@@ -982,3 +985,115 @@ def test_the_tree_shows_that_the_denominator_can_grow(app):
     assert "추가됨" in js, "늘어난 사실을 적는 문구가 없습니다"
     assert "content-added" in c.get("/static/app.css").get_data(as_text=True), (
         "늘어난 표시를 그리는 스타일 규칙이 없습니다")
+
+
+# --- 화면 캡처 (`POST /api/capture`) -----------------------------------------
+
+
+def _stub_capture(monkeypatch, *, raw=None, error=None):
+    """`/api/capture` 가 부르는 세 함수를 갈아끼운다.
+
+    라우트가 하는 일(프로파일 찾기·오류를 상태 코드로 옮기기·base64 로 싣기)만
+    남기고 OS 를 뺀다. OS 경로는 CI 로 재현할 수 없으므로 라이브 확인이 본다.
+    """
+    import qatc.app.server as server_mod
+
+    monkeypatch.setattr(server_mod, "list_windows", lambda: ["창"])
+
+    def fake_select(candidates, profile):
+        return "선택된 창"
+
+    def fake_grab(window):
+        if error is not None:
+            raise error
+        return raw if raw is not None else _png()
+
+    monkeypatch.setattr(server_mod, "select_window", fake_select)
+    monkeypatch.setattr(server_mod, "grab_window", fake_grab)
+
+
+def test_capture_returns_a_base64_png(app, monkeypatch, tmp_path):
+    import base64
+
+    (tmp_path / "p").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "p" / "starrail.yaml").write_text(
+        "name: 붕괴 스타레일" + chr(10) + "window:" + chr(10) + "  process: StarRail.exe",
+        encoding="utf-8")
+    _stub_capture(monkeypatch, raw=_png())
+
+    r = app.test_client().post("/api/capture", json={"game": "starrail"})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["media_type"] == "image/png"
+    assert base64.b64decode(body["data"])[:4] == bytes([137, 80, 78, 71])
+
+
+def test_the_capture_response_matches_the_chat_image_shape(app, monkeypatch, tmp_path):
+    """캡처 결과가 붙여넣은 이미지와 같은 모양이어야 프런트가 한 경로로 다룬다."""
+    (tmp_path / "p").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "p" / "starrail.yaml").write_text(
+        "name: 스타레일" + chr(10) + "window:" + chr(10) + "  process: StarRail.exe",
+        encoding="utf-8")
+    _stub_capture(monkeypatch)
+
+    body = app.test_client().post("/api/capture", json={"game": "starrail"}).get_json()
+    assert set(body) == {"data", "media_type"}
+    # 그 모양 그대로 /api/chat 에 넣어도 통과해야 한다.
+    from qatc.app.chat import decode_shots
+    images, refusal = decode_shots([body])
+    assert refusal is None and len(images) == 1
+
+
+_CAPTURE_FAILURES = [
+    ("no_window_config", 400), ("not_running", 404),
+    ("minimized", 409), ("occluded", 409), ("blank", 409),
+]
+
+
+@pytest.mark.parametrize("kind,status", _CAPTURE_FAILURES, ids=[c[0] for c in _CAPTURE_FAILURES])
+def test_capture_errors_map_to_status_codes(app, monkeypatch, tmp_path, kind, status):
+    """상태 코드가 원인마다 달라야 화면이 다른 안내를 보여줄 수 있다."""
+    from qatc.capture import CaptureError
+
+    (tmp_path / "p").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "p" / "starrail.yaml").write_text(
+        "name: 스타레일" + chr(10) + "window:" + chr(10) + "  process: StarRail.exe",
+        encoding="utf-8")
+    _stub_capture(monkeypatch, error=CaptureError(kind, "한국어 사유 문장"))
+
+    r = app.test_client().post("/api/capture", json={"game": "starrail"})
+    assert r.status_code == status
+    assert r.get_json()["error"] == "한국어 사유 문장"
+    assert "CaptureError" not in r.get_data(as_text=True)
+
+
+def test_a_cross_origin_capture_is_refused(app, monkeypatch):
+    """이 엔드포인트는 **화면 내용**을 돌려준다 - 교차 출처 차단이 더 중요하다."""
+    called = []
+    import qatc.app.server as server_mod
+    monkeypatch.setattr(server_mod, "list_windows", lambda: called.append(1) or [])
+
+    r = app.test_client().post("/api/capture", json={"game": "starrail"},
+                               headers={"Origin": "https://evil.example"})
+    assert r.status_code == 403
+    assert called == [], "교차 출처 요청이 화면을 읽었습니다"
+
+
+def test_a_capture_without_a_game_never_touches_the_screen(app, monkeypatch):
+    called = []
+    import qatc.app.server as server_mod
+    monkeypatch.setattr(server_mod, "list_windows", lambda: called.append(1) or [])
+
+    r = app.test_client().post("/api/capture", json={})
+    assert r.status_code == 400
+    assert called == []
+    assert "트리" in r.get_json()["error"]      # 다음 조치
+
+
+def test_an_unknown_game_is_a_korean_404(app, monkeypatch):
+    import qatc.app.server as server_mod
+    monkeypatch.setattr(server_mod, "list_windows", lambda: [])
+
+    r = app.test_client().post("/api/capture", json={"game": "없는게임"})
+    assert r.status_code == 404
+    assert "프로파일" in r.get_json()["error"]

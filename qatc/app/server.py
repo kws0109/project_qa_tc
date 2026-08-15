@@ -10,20 +10,52 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from urllib.parse import urlsplit
 
 from flask import Flask, Response, jsonify, request
 
+from ..capture import CaptureError, grab_window, list_windows, select_window
 from ..cli_knowledge import _safe_filename_part
 from ..config import AppConfig
 from ..console import _p
 from ..export.tc_excel import ExportBlocked, export_tc_excel
 from ..knowledge.gate import plan_families, withdrawn_families
 from ..knowledge.store import KnowledgeStore
+from ..profiles import load_profiles
 from .chat import ClaudeMissing, decode_shots, resolve_claude, stream_turn
 from .views import ContentNotFound, content_detail, resolve_db_path, tree
+
+
+def _reject_bad_local_request(req):
+    """로컬 전용 POST 라우트가 공통으로 보는 것. 괜찮으면 `None`.
+
+    `/api/chat` 과 `/api/capture` 둘 다 필요로 하는 앞 두 검사다 — 복사하지
+    않고 나눠 쓴다. 갈라지면 한쪽만 뚫린다.
+
+    1. **출처.** 로컬 전용 앱이므로 교차 출처 요청은 그냥 거절한다. CORS
+       응답 헤더로 막는 것으로는 부족하다 — `text/plain` 같은 단순 요청은
+       preflight 가 없어서, 브라우저가 응답을 **읽지 못할 뿐 요청은 이미
+       실행된다.** `/api/chat` 은 그때 이미 돈이 쓰였고, `/api/capture` 는
+       그때 이미 화면을 읽었다. 브라우저를 믿지 말고 서버가 실행 전에
+       막아야 한다. `Origin` 이 아예 없는 호출(로컬 스크립트·테스트
+       클라이언트)은 브라우저가 만든 것이 아니므로 통과시킨다.
+    2. **콘텐츠 타입 · 본문.** JSON 객체여야 한다. 이 검사만으로도 위의
+       단순 요청 경로가 한 번 더 막힌다(방어선 둘이 서로 독립이다).
+    """
+    origin = req.headers.get("Origin") or req.headers.get("Referer")
+    if origin and urlsplit(origin).netloc != req.host:
+        return jsonify({"error": "이 앱은 로컬에서만 씁니다. "
+                                 "브라우저에서 http://127.0.0.1 주소로 다시 여세요."}), 403
+    if not req.is_json:
+        return jsonify({"error": "요청 형식이 올바르지 않습니다. "
+                                 "브라우저를 새로고침한 뒤 다시 보내세요."}), 400
+    if not isinstance(req.get_json(silent=True), dict):
+        return jsonify({"error": "요청 내용을 읽을 수 없습니다. "
+                                 "브라우저를 새로고침한 뒤 다시 보내세요."}), 400
+    return None
 
 
 def _reject_bad_chat_request(req):
@@ -35,36 +67,23 @@ def _reject_bad_chat_request(req):
     없었다 — 파싱 불가 본문·빈 본문·비-JSON 콘텐츠 타입이 전부
     `message=""` 로 격하돼 턴이 그대로 돌았다.
 
-    세 가지를 본다.
+    출처 · 콘텐츠 타입 · 본문 검사는 `_reject_bad_local_request` 가 대신
+    본다(`/api/capture` 와 공유). 여기서는 이 라우트만의 나머지를 본다.
 
-    1. **출처.** 로컬 전용 앱이므로 교차 출처 요청은 그냥 거절한다. CORS
-       응답 헤더로 막는 것으로는 부족하다 — `text/plain` 같은 단순 요청은
-       preflight 가 없어서, 브라우저가 응답을 **읽지 못할 뿐 요청은 이미
-       실행된다.** 즉 돈은 이미 쓰였다. 브라우저를 믿지 말고 서버가 실행
-       전에 막아야 한다. `Origin` 이 아예 없는 호출(로컬 스크립트·테스트
-       클라이언트)은 브라우저가 만든 것이 아니므로 통과시킨다.
-    2. **콘텐츠 타입.** JSON 이어야 한다. 이 검사만으로도 위의 단순 요청
-       경로가 한 번 더 막힌다(방어선 둘이 서로 독립이다).
-    3. **`message`.** 비어 있지 않은 문자열이어야 한다. 프런트는 이미 그
+    1. **`message`.** 비어 있지 않은 문자열이어야 한다. 프런트는 이미 그
        모양만 보낸다(`app.js` 가 `trim()` 후 빈 문자열을 막는다) — 서버
        쪽 쌍둥이가 없었을 뿐이다.
+    2. **`content`.** 있다면 문자열이어야 한다.
 
     첨부 이미지(`images`)는 **여기서 보지 않는다.** 판정 기준이 이 파일이
     아니라 그 바이트를 디스크에 쓰는 `chat.py` 에 있기 때문이다
     (`decode_shots`). 라우트가 그 함수를 이 검사 바로 다음에 부른다 — 두
     관문 모두 턴을 띄우기 전이므로, 어느 쪽에 걸리든 돈은 쓰이지 않는다.
     """
-    origin = req.headers.get("Origin") or req.headers.get("Referer")
-    if origin and urlsplit(origin).netloc != req.host:
-        return jsonify({"error": "이 앱은 로컬에서만 씁니다. "
-                                 "브라우저에서 http://127.0.0.1 주소로 다시 여세요."}), 403
-    if not req.is_json:
-        return jsonify({"error": "요청 형식이 올바르지 않습니다. "
-                                 "브라우저를 새로고침한 뒤 다시 보내세요."}), 400
+    rejection = _reject_bad_local_request(req)
+    if rejection is not None:
+        return rejection
     payload = req.get_json(silent=True)
-    if not isinstance(payload, dict):
-        return jsonify({"error": "요청 내용을 읽을 수 없습니다. "
-                                 "브라우저를 새로고침한 뒤 다시 보내세요."}), 400
     message = payload.get("message")
     if not isinstance(message, str) or not message.strip():
         return jsonify({"error": "보낼 내용이 비어 있습니다. "
@@ -157,6 +176,38 @@ def create_app(cfg: AppConfig) -> Flask:
                 yield f"event: error\ndata: {data}\n\n"
 
         return Response(generate(), mimetype="text/event-stream")
+
+    #: 캡처 실패 코드 -> HTTP 상태. 원인마다 상태가 달라야 화면이 다른 안내를
+    #: 보여줄 수 있다. 모르는 코드는 409 로 떨어뜨린다(요청은 멀쩡했고 지금
+    #: 상태가 문제라는 뜻이므로).
+    capture_status = {
+        "no_window_config": 400, "not_running": 404,
+        "minimized": 409, "occluded": 409, "blank": 409,
+    }
+
+    @app.post("/api/capture")
+    def api_capture():
+        rejection = _reject_bad_local_request(request)
+        if rejection is not None:
+            return rejection
+        payload = request.get_json(silent=True) or {}
+        game = payload.get("game")
+        if not isinstance(game, str) or not game.strip():
+            return jsonify({"error": "어느 게임의 창을 찍을지 알 수 없습니다. "
+                                     "왼쪽 트리에서 컨텐츠를 고른 뒤 다시 눌러 주세요."}), 400
+        # `game` 은 요청 본문에서 온다. `resolve_db_path` 와 같은 원칙으로,
+        # 이름의 생김새를 보지 않고 **실재하는 프로파일 목록과 대조한다.**
+        profile = load_profiles(cfg.profiles_path).get(game)
+        if profile is None:
+            return jsonify({"error": f"'{game}' 프로파일이 없습니다. "
+                                     f"왼쪽 트리에서 게임을 다시 고르세요."}), 404
+        try:
+            raw = grab_window(select_window(list_windows(), profile))
+        except CaptureError as exc:
+            # 클래스 이름이 아니라 완성된 한국어 문장을 그대로 보낸다.
+            return jsonify({"error": exc.message}), capture_status.get(exc.kind, 409)
+        return jsonify({"data": base64.b64encode(raw).decode("ascii"),
+                        "media_type": "image/png"})
 
     @app.post("/api/export")
     def api_export():

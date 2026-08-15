@@ -94,7 +94,20 @@ def _matches(window: WindowInfo, profile: GameProfile) -> bool:
         if window.process.lower() != profile.window_process.lower():
             return False
     if profile.window_title_regex:
-        if not re.search(profile.window_title_regex, window.title):
+        try:
+            found = re.search(profile.window_title_regex, window.title)
+        except re.error as exc:
+            # window_title_regex 는 사용자가 profiles/*.yaml 을 손으로 고쳐
+            # 넣는 값이다 - 문법이 깨지면 re.search 가 CaptureError 가 아닌
+            # re.error 를 던진다. 여기서 안 잡으면 라우트의
+            # `except CaptureError` 를 비껴가 Flask 가 그대로 500 트레이스백
+            # 으로 바꾼다("사용자는 트레이스백을 안 본다" 는 이 앱의 불변식).
+            raise CaptureError(
+                "no_window_config",
+                f"'{profile.key}' 프로파일의 창 정규식이 올바르지 않습니다 ({exc}). "
+                f"profiles/{profile.key}.yaml 의 window.title_regex 값을 고쳐 주세요.",
+            ) from exc
+        if not found:
             return False
     return True
 
