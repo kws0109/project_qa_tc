@@ -373,6 +373,65 @@ button, textarea, input {
   cursor: not-allowed;
 }
 
+/* ---------- 첨부 이미지 ---------- */
+
+#chat-attachments {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 20px 0;
+  flex: 0 0 auto;
+}
+
+.attachment {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.attachment img {
+  display: block;
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+}
+
+/* 빼기 단추는 **늘** 보인다. hover 로 숨기면 "무엇을 보낼지 고를 수 있다"
+   는 사실 자체가 안 보인다 — 화면에 있는 것이 그대로 넘어가는 기능이라,
+   고를 수 있다는 표시가 첨부 자체만큼 중요하다. */
+.attachment-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  line-height: 1;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(31, 35, 40, 0.72);
+  color: #fff;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+/* 끌어다 놓는 중이라는 표시. */
+#chat.dropping { outline: 2px dashed var(--accent); outline-offset: -6px; }
+
+/* 보낸 말풍선에 남는 썸네일 — 나중에 근거를 되짚을 때 필요하다. */
+.msg-shots { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+
+.msg-shots img {
+  display: block;
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
 /* ---------- 오른쪽: TC 검토 ---------- */
 
 #review-toolbar {

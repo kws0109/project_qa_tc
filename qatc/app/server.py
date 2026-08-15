@@ -22,7 +22,7 @@ from ..console import _p
 from ..export.tc_excel import ExportBlocked, export_tc_excel
 from ..knowledge.gate import plan_families, withdrawn_families
 from ..knowledge.store import KnowledgeStore
-from .chat import ClaudeMissing, resolve_claude, stream_turn
+from .chat import ClaudeMissing, decode_shots, resolve_claude, stream_turn
 from .views import ContentNotFound, content_detail, resolve_db_path, tree
 
 
@@ -48,6 +48,11 @@ def _reject_bad_chat_request(req):
     3. **`message`.** 비어 있지 않은 문자열이어야 한다. 프런트는 이미 그
        모양만 보낸다(`app.js` 가 `trim()` 후 빈 문자열을 막는다) — 서버
        쪽 쌍둥이가 없었을 뿐이다.
+
+    첨부 이미지(`images`)는 **여기서 보지 않는다.** 판정 기준이 이 파일이
+    아니라 그 바이트를 디스크에 쓰는 `chat.py` 에 있기 때문이다
+    (`decode_shots`). 라우트가 그 함수를 이 검사 바로 다음에 부른다 — 두
+    관문 모두 턴을 띄우기 전이므로, 어느 쪽에 걸리든 돈은 쓰이지 않는다.
     """
     origin = req.headers.get("Origin") or req.headers.get("Referer")
     if origin and urlsplit(origin).netloc != req.host:
@@ -126,10 +131,14 @@ def create_app(cfg: AppConfig) -> Flask:
         payload = request.get_json(silent=True) or {}
         message = payload["message"].strip()
         content = payload.get("content")
+        # 두 번째 관문. 아직 턴을 띄우기 전이므로 거절해도 돈은 안 든다.
+        images, refusal = decode_shots(payload.get("images"))
+        if refusal is not None:
+            return jsonify({"error": refusal}), 400
 
         def generate():
             try:
-                for ev in stream_turn(cfg, message, content):
+                for ev in stream_turn(cfg, message, content, images=images):
                     if ev.kind == "error" and ev.data.get("kind") == "auth":
                         session_state["unauthenticated"] = True
                     elif ev.kind == "done":

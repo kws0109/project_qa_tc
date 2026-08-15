@@ -1267,3 +1267,36 @@ def test_a_silent_child_still_produces_progress(cfg, tmp_path, monkeypatch):
     evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(tmp_path, lines)))
     phases = [e.data["phase"] for e in evs if e.kind == "progress"]
     assert "기다리는 중" in phases
+
+
+# --- 첨부한 이미지의 경로가 자식에게 닿는가 ---------------------------------
+#
+# `claude` 는 **파일 경로로** 이미지를 읽는다(실측: 합성 이미지의 도형 개수와
+# 색을 정확히 서술했다). 그래서 이미지를 대화에 밀어 넣는 특별한 프로토콜이
+# 필요 없다 — 경로만 닿으면 된다. 반대로 말하면, 경로가 안 닿으면 첨부는
+# 조용히 아무 일도 안 한 것이 된다(사용자에겐 아무 표시도 없이).
+
+
+def test_the_image_path_reaches_the_child_argv_or_message(cfg, tmp_path):
+    """가짜 claude 가 받은 메시지에 절대경로가 들어 있는지 확인한다."""
+    import io
+    from pathlib import Path
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (2, 2), (10, 200, 40)).save(buf, format="PNG")
+
+    record = tmp_path / "stdin.txt"
+    evs = list(stream_turn(cfg, "이 화면이에요", None, images=[buf.getvalue()],
+                           claude=_fake_claude_recording_stdin(tmp_path, record)))
+    assert _kinds(evs) == ["done"]
+
+    sent = json.loads(record.read_text(encoding="utf-8").strip())
+    text = sent["message"]["content"][0]["text"]
+    assert text.startswith("이 화면이에요"), "사용자 문장이 먼저 와야 한다"
+
+    attached = [ln.strip() for ln in text.splitlines()
+                if ln.strip().lower().endswith(".png")]
+    assert len(attached) == 1, f"첨부 경로가 메시지에 없습니다: {text!r}"
+    assert Path(attached[0]).is_absolute(), "상대 경로는 자식의 cwd 에 따라 달라진다"

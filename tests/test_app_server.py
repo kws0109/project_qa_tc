@@ -304,6 +304,29 @@ def _snapshot(root):
     return out
 
 
+def _dir_stamps(root):
+    """지식 루트와 그 아래 모든 폴더의 mtime.
+
+    `_snapshot` 은 **파일만** 본다. 그래서 "폴더를 만들고 · 그 안에 쓰고 ·
+    다시 지운다" 는 지식 루트를 통째로 헤집고도 스냅샷을 하나도 안 바꾼다 —
+    정리가 흔적을 지우기 때문이다 (실측: 첨부 이미지를 지식 루트에 쓰도록
+    바꾼 변이가 `_snapshot` 비교를 그대로 통과했다. 정리를 잘 하는 코드일수록
+    이 가드에 안 걸린다는 뜻이라, 하필 정반대다).
+
+    폴더의 mtime 은 자식이 생기거나 사라질 때 갱신되므로 그 흔적이 남는다.
+    """
+    import pathlib
+
+    root = pathlib.Path(root)
+    if not root.exists():
+        return {}
+    out = {".": root.stat().st_mtime_ns}
+    for p in sorted(root.rglob("*")):
+        if p.is_dir():
+            out[str(p.relative_to(root))] = p.stat().st_mtime_ns
+    return out
+
+
 def _describe_delta(before, after):
     """무엇이 생겼는지·바뀌었는지 **파일 이름을 대며** 말한다."""
     lines = []
@@ -344,20 +367,27 @@ def test_no_read_endpoint_changes_a_single_byte_of_the_knowledge_root(app, monke
     게이트가 우회된다. 그런데 이 가드는 지금까지 `/api/chat` 을 전혀 태우지
     않았다: 핸들러 안에 원시 sqlite 쓰기를 심어도 이 테스트는 볼 수 없었다.
     실제 턴(자식 프로세스)이 만드는 쓰기까지 여기서 검증할 수는 없으므로
-    (진짜 `claude` 를 부르면 비용이 든다), `stream_turn` 을 스텁으로 바꿔
-    핸들러 자신의 동작만 격리해서 본다 — 스텁이 아무것도 안 쓰는데 스냅샷이
-    바뀐다면 그건 핸들러 코드가 직접 쓴 것이다.
+    (진짜 `claude` 를 부르면 비용이 든다), 자식 프로세스를 띄우는 **안쪽**만
+    스텁으로 바꿔 나머지 경로를 전부 실제로 태운다 — 스텁이 아무것도 안 쓰는데
+    스냅샷이 바뀐다면 그건 앱 코드가 직접 쓴 것이다.
+
+    **바깥(`server.stream_turn`)이 아니라 안쪽(`chat._stream_turn`)을 스텁하는
+    이유.** 첨부 이미지를 임시 파일로 쓰는 코드는 바깥 껍데기에 있다. 예전처럼
+    바깥을 통째로 갈아끼우면 그 쓰기가 아예 실행되지 않아, 저장 위치가 지식
+    루트로 바뀌어도 이 가드가 못 본다 — 그 결함을 잡는 것이 이 가드의 존재
+    이유인데도.
     """
     root = tmp_path / "k"
     before = _snapshot(root)
+    before_dirs = _dir_stamps(root)
     assert before, "픽스처가 지식 DB 를 하나도 안 만들었습니다"
 
     from qatc.app import chat as chat_mod
 
-    def fake_stream(cfg, message, content, **kw):
+    def fake_child(cfg, message, content, *, claude=None):
         yield chat_mod.ChatEvent("done", {})
 
-    monkeypatch.setattr("qatc.app.server.stream_turn", fake_stream)
+    monkeypatch.setattr(chat_mod, "_stream_turn", fake_child)
 
     c = app.test_client()
     c.get("/")
@@ -367,11 +397,21 @@ def test_no_read_endpoint_changes_a_single_byte_of_the_knowledge_root(app, monke
     for query in _HOSTILE_CONTENT_QUERIES:
         c.get("/api/content", query_string=query)
     c.post("/api/chat", json={"message": "안녕", "content": None}).get_data()
+    # 첨부가 붙은 턴도 태운다 — 이미지를 지식 루트에 쓰면 여기서 걸린다.
+    c.post("/api/chat", json={
+        "message": "이 화면이에요",
+        "images": [{"data": _b64(_png()), "media_type": "image/png"}],
+    }).get_data()
 
     after = _snapshot(root)
     assert after == before, (
         "읽기 경로가 지식 루트를 바꿨습니다 — 백엔드는 지식 DB 에 쓰지 않습니다:\n"
         + _describe_delta(before, after)
+    )
+    assert _dir_stamps(root) == before_dirs, (
+        "지식 루트 안에 무언가가 생겼다가 지워졌습니다. 파일은 안 남았지만 "
+        "폴더 mtime 이 그 사실을 기억합니다 — 백엔드는 지식 루트에 아무것도 "
+        "쓰지 않습니다(임시 파일도 포함)."
     )
 
 
@@ -742,3 +782,170 @@ def test_progress_reaches_the_browser_as_its_own_frame(app, monkeypatch):
     text = app.test_client().post("/api/chat", json={"message": "x"}).get_data(as_text=True)
     assert "event: progress" in text
     assert "준비 중" in text
+
+
+# --- 스크린샷 첨부 ----------------------------------------------------------
+#
+# 첫 실사용에서 사용자는 스크린샷 3장을 따로 저장해 두고, 그것을 보면서 화면
+# 인벤토리를 손으로 옮겨 적었다 — `screen` 슬롯 하나에 전부. 붙일 수 있으면
+# 그 옮겨적기가 없어진다.
+#
+# **핵심은 방향이다.** `claude` 는 파일 경로로 이미지를 읽는다(실측). 그래서
+# 백엔드가 임시 파일로 **쓰고** `claude` 는 **읽기만** 한다 — 예전에
+# `.qatc-tmp/` 가 거부됐던 것은 `claude` 가 쓰려고 했기 때문이다.
+
+
+def _png(size=(1, 1)) -> bytes:
+    """진짜 PNG. 손으로 박아 넣은 바이트열을 쓰지 않는 이유는, 그러면 매직
+    바이트 검사를 통과시키려고 테스트가 거짓말을 하게 되기 때문이다."""
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, (200, 30, 30)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+#: 실행 파일(PE)의 시작. `media_type` 은 얼마든지 "image/png" 라고 말할 수
+#: 있으므로, 그 말을 믿지 않는다는 것을 이 값으로 검사한다.
+_NOT_AN_IMAGE = b"MZ\x90\x00\x03 this is not an image"
+
+
+def _b64(raw: bytes) -> str:
+    import base64
+
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _attached_paths(message: str) -> list:
+    """턴 메시지에 덧붙은 이미지 절대경로들."""
+    lines = message.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("[첨부 이미지"):
+            return [x.strip() for x in lines[i + 1:] if x.strip()]
+    return []
+
+
+def _spy_child_stream(monkeypatch):
+    """자식 프로세스를 띄우는 **안쪽**만 갈아끼운다.
+
+    바깥의 `stream_turn` 은 그대로 둬야 임시 파일 쓰기·경로 덧붙이기·정리가
+    실제로 돌고, 이 절이 검사하려는 것이 바로 그것이다. 예전 방식대로
+    `server.stream_turn` 을 통째로 스텁하면 그 셋 중 어느 것도 실행되지
+    않아 첨부 경로가 통째로 미관측이 된다.
+
+    `existed` 에는 **턴이 도는 그 순간** 실재하던 경로만 담는다 — 나중에
+    "지워졌다" 를 볼 때, 애초에 만들어지긴 했는지와 구별하기 위해서다.
+    """
+    import os
+
+    from qatc.app import chat as chat_mod
+
+    seen = []
+
+    def fake(cfg, message, content, *, claude=None):
+        paths = _attached_paths(message)
+        seen.append({
+            "message": message,
+            "paths": paths,
+            "existed": [p for p in paths if os.path.exists(p)],
+        })
+        yield chat_mod.ChatEvent("done", {})
+
+    monkeypatch.setattr(chat_mod, "_stream_turn", fake)
+    return seen
+
+
+def test_attached_image_is_written_outside_the_knowledge_root(app, tmp_path, monkeypatch):
+    """지식 루트에 쓰면 무쓰기 가드가 실패한다 — 그게 가드의 요점이다."""
+    from pathlib import Path
+
+    seen = _spy_child_stream(monkeypatch)
+    r = app.test_client().post("/api/chat", json={
+        "message": "이 화면이에요",
+        "images": [{"data": _b64(_png()), "media_type": "image/png"}],
+    })
+    assert r.status_code == 200
+    r.get_data()
+
+    assert len(seen) == 1
+    paths = seen[0]["paths"]
+    assert len(paths) == 1, f"첨부 경로가 메시지에 없습니다: {seen[0]['message']!r}"
+    assert seen[0]["existed"] == paths, "턴이 도는 동안 파일이 실재하지 않았습니다"
+
+    root = (tmp_path / "k").resolve()
+    written = Path(paths[0]).resolve()
+    assert written.is_absolute()
+    assert not written.is_relative_to(root), f"지식 루트 안에 썼습니다: {written}"
+
+
+def test_a_non_image_payload_is_rejected_in_korean(app):
+    """media_type 을 믿지 않는다 — 매직 바이트로 판정한다."""
+    r = app.test_client().post("/api/chat", json={
+        "message": "x",
+        "images": [{"data": _b64(_NOT_AN_IMAGE), "media_type": "image/png"}],
+    })
+    assert r.status_code == 400
+    body = r.get_json()
+    assert "이미지" in body["error"]
+    assert "PNG" in body["error"]           # 무엇이 되는지 알려준다
+    assert "Traceback" not in r.get_data(as_text=True)
+
+
+def test_too_many_images_are_rejected(app, monkeypatch):
+    seen = _spy_child_stream(monkeypatch)
+    one = {"data": _b64(_png()), "media_type": "image/png"}
+    r = app.test_client().post("/api/chat", json={"message": "x", "images": [one] * 5})
+    assert r.status_code == 400
+    assert "4" in r.get_json()["error"]
+    assert seen == [], "상한을 넘겼는데 턴이 실행됐습니다"
+
+
+def test_an_oversized_image_is_rejected(app, monkeypatch):
+    """한 장 8MB 상한. 넘으면 그 자리에서 400 이고 턴은 뜨지 않는다."""
+    from qatc.app.chat import _MAX_SHOT_BYTES
+
+    assert _MAX_SHOT_BYTES == 8 * 1024 * 1024
+    seen = _spy_child_stream(monkeypatch)
+    huge = b"\x89PNG\r\n\x1a\n" + bytes(_MAX_SHOT_BYTES)
+    r = app.test_client().post("/api/chat", json={
+        "message": "x",
+        "images": [{"data": _b64(huge), "media_type": "image/png"}],
+    })
+    assert r.status_code == 400
+    assert "8MB" in r.get_json()["error"]
+    assert seen == [], "상한을 넘겼는데 턴이 실행됐습니다"
+
+
+def test_the_client_cannot_choose_the_filename(app, monkeypatch):
+    """이름을 클라이언트가 정하면 그 경로가 통째로 요청자 제어가 된다."""
+    from pathlib import Path
+
+    seen = _spy_child_stream(monkeypatch)
+    app.test_client().post("/api/chat", json={
+        "message": "x",
+        "images": [{"data": _b64(_png()), "media_type": "image/png",
+                    "filename": "../../지식루트에떨어져라.png"}],
+    }).get_data()
+
+    name = Path(seen[0]["paths"][0]).name
+    assert "지식루트에떨어져라" not in name
+    assert ".." not in name
+    assert name.startswith("qatc-shot-") and name.endswith(".png")
+
+
+def test_the_temp_image_is_deleted_after_the_turn(app, monkeypatch):
+    """턴이 끝나면 지운다. 안 지우면 화면에 있던 것이 임시 폴더에 쌓인다."""
+    import os
+
+    seen = _spy_child_stream(monkeypatch)
+    app.test_client().post("/api/chat", json={
+        "message": "x",
+        "images": [{"data": _b64(_png()), "media_type": "image/png"}],
+    }).get_data()
+
+    paths = seen[0]["paths"]
+    assert seen[0]["existed"] == paths      # 턴 중에는 있었고
+    still = [p for p in paths if os.path.exists(p)]
+    assert still == [], f"턴이 끝났는데 남아 있습니다: {still}"

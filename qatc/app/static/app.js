@@ -471,9 +471,117 @@ function stopProgress() {
   progress.timer = null;
 }
 
-function appendUserMessage(text) {
+// --- 첨부 이미지 --------------------------------------------------------
+//
+// 첫 실사용에서 사용자는 스크린샷 3장을 따로 저장해 두고, 그것을 보면서 화면
+// 인벤토리를 손으로 옮겨 적었다 — `screen` 슬롯 하나에 전부. 붙일 수 있으면
+// 그 옮겨적기가 없어진다.
+//
+// **개인정보.** 화면에 있는 것이 그대로 넘어간다 — 그때의 스크린샷에는 실제
+// 이메일 주소가 찍혀 있었다. 손으로 옮길 때는 무엇을 넘길지 골랐지만 첨부는
+// 고르지 않는다. 그래서 보내기 **전에** 항상 보여주고, 한 장씩 뺄 수 있게
+// 한다. 여기서 못 빼면 사용자가 고를 기회가 아예 없다.
+//
+// 여기 상한은 서버 상한의 사본이 아니라 **먼저 걸리는 안내**다. 판정은 서버가
+// 한다(`decode_shots`) — 그쪽이 실제로 디스크에 쓰는 자리이기 때문이다.
+const MAX_ATTACHMENTS = 4;
+const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+
+let attachments = [];
+
+function readImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("읽지 못했습니다"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addImageFiles(fileList) {
+  const files = Array.from(fileList || []).filter((f) => f && f.type.startsWith("image/"));
+  for (const file of files) {
+    if (attachments.length >= MAX_ATTACHMENTS) {
+      appendErrorMessage(`이미지는 한 번에 ${MAX_ATTACHMENTS}장까지 붙일 수 있습니다.`);
+      break;
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      appendErrorMessage("이미지 한 장은 8MB까지입니다. 더 작게 잘라서 붙여넣어 주세요.");
+      continue;
+    }
+    let dataUrl;
+    try {
+      dataUrl = await readImageFile(file);
+    } catch (err) {
+      appendErrorMessage("이미지를 읽지 못했습니다. 다시 붙여넣어 주세요.");
+      continue;
+    }
+    attachments.push({
+      dataUrl,
+      base64: dataUrl.slice(dataUrl.indexOf(",") + 1),
+      mediaType: file.type || "image/png",
+    });
+  }
+  renderAttachments();
+}
+
+function thumbnail(dataUrl) {
+  const img = document.createElement("img");
+  img.src = dataUrl;
+  img.alt = "붙인 이미지";
+  return img;
+}
+
+function renderAttachments() {
+  const strip = document.getElementById("chat-attachments");
+  strip.innerHTML = "";
+  strip.hidden = attachments.length === 0;
+  attachments.forEach((shot, index) => {
+    const remove = el("button", {
+      class: "attachment-remove",
+      text: "×",
+      title: "이 이미지를 뺍니다",
+      onclick: () => {
+        attachments.splice(index, 1);
+        renderAttachments();
+      },
+    });
+    remove.type = "button";
+    strip.appendChild(el("div", { class: "attachment" }, [thumbnail(shot.dataUrl), remove]));
+  });
+}
+
+function bindAttachments() {
+  document.getElementById("chat-input").addEventListener("paste", (e) => {
+    const files = e.clipboardData && e.clipboardData.files;
+    if (files && files.length) {
+      e.preventDefault();       // 안 막으면 파일 이름이 텍스트로 딸려 들어간다
+      addImageFiles(files);
+    }
+  });
+  const pane = document.getElementById("chat");
+  pane.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    pane.classList.add("dropping");
+  });
+  pane.addEventListener("dragleave", () => pane.classList.remove("dropping"));
+  pane.addEventListener("drop", (e) => {
+    e.preventDefault();
+    pane.classList.remove("dropping");
+    if (e.dataTransfer) addImageFiles(e.dataTransfer.files);
+  });
+}
+
+// 말풍선에 썸네일을 남긴다 — 나중에 "이 슬롯 근거가 뭐였지" 를 되짚을 때,
+// 그때 무엇을 보여줬는지가 대화 안에 남아 있어야 한다.
+function appendUserMessage(text, shots) {
   const log = document.getElementById("chat-log");
   const bubble = el("div", { class: "msg msg-user" }, [el("p", { text })]);
+  if (shots && shots.length) {
+    const strip = el("div", { class: "msg-shots" });
+    for (const shot of shots) strip.appendChild(thumbnail(shot.dataUrl));
+    bubble.appendChild(strip);
+  }
   log.appendChild(bubble);
   scrollChatToBottom();
 }
@@ -610,7 +718,12 @@ async function submitMessage() {
   const text = input.value.trim();
   if (!text) return;
   input.value = "";
-  appendUserMessage(text);
+  // 이 턴에 실제로 나가는 것만 떼어 낸다. 보내는 도중에 사용자가 새로
+  // 붙여넣어도 그것은 다음 턴의 것이다.
+  const shots = attachments;
+  attachments = [];
+  renderAttachments();
+  appendUserMessage(text, shots);
   setTurnInProgress(true);
   const turn = beginAssistantTurn();
 
@@ -618,7 +731,11 @@ async function submitMessage() {
     const resp = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, content: state.selectedContent }),
+      body: JSON.stringify({
+        message: text,
+        content: state.selectedContent,
+        images: shots.map((s) => ({ data: s.base64, media_type: s.mediaType })),
+      }),
     });
     if (!resp.ok || !resp.body) {
       // 서버가 왜 거절했는지 한국어로 실어 보냈으면 그걸 그대로 보여준다 —
@@ -632,14 +749,26 @@ async function submitMessage() {
       appendErrorMessage(
         body && body.error ? body.error : `요청이 실패했습니다 (${resp.status}).`
       );
+      // 붙인 것을 되돌려 준다. 안 그러면 "4장은 너무 많다" 같은 거절 하나에
+      // 사용자가 스크린샷을 전부 다시 캡처해야 한다.
+      restoreAttachments(shots);
       setTurnInProgress(false);
       return;
     }
     await readSseStream(resp.body.getReader(), turn);
   } catch (err) {
     appendErrorMessage("서버와 통신하지 못했습니다. 다시 시도하세요.");
+    restoreAttachments(shots);
     setTurnInProgress(false);
   }
+}
+
+// 턴이 뜨지도 못하고 거절당했을 때만 쓴다. 그 사이 사용자가 새로 붙인 것이
+// 있으면 그것을 앞에 두고, 상한을 넘는 만큼은 버린다.
+function restoreAttachments(shots) {
+  if (!shots.length) return;
+  attachments = attachments.concat(shots).slice(0, MAX_ATTACHMENTS);
+  renderAttachments();
 }
 
 async function refreshAfterTurn() {
@@ -668,6 +797,7 @@ function bindChatForm() {
 
 function init() {
   bindChatForm();
+  bindAttachments();
   document.getElementById("chat-new-btn").addEventListener("click", clearSelection);
   document.getElementById("export-btn").addEventListener("click", exportContent);
   updateChatHeader();

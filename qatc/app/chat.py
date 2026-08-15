@@ -11,16 +11,19 @@ CLI)와만 대화한다. 두 계층은 서로 몰라야 한다.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import queue
 import shutil
 import subprocess
+import tempfile
 import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Sequence
 
 from ..config import AppConfig, project_root
 from ..console import _p
@@ -199,10 +202,173 @@ def _save_sessions(path: Path, sessions: dict) -> None:
     path.write_text(json.dumps(sessions, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# --- 첨부 이미지 --------------------------------------------------------------
+#
+# **방향이 핵심이다.** `claude` 는 파일 경로로 이미지를 읽는다(실측: 합성
+# 이미지의 도형 개수와 색을 정확히 서술했다). 그래서 이미지를 대화에 밀어
+# 넣는 특별한 프로토콜이 필요 없고, 더 중요하게는 **쓰기 권한 벽을 피한다** —
+# 예전에 `.qatc-tmp/` 가 거부됐던 것은 `claude` 가 거기에 **쓰려고** 했기
+# 때문이다. 여기서는 백엔드가 쓰고 `claude` 는 읽기만 한다.
+#
+# 판정(무엇이 이미지인가)과 쓰기를 같은 파일에 두는 이유: 갈라 놓으면
+# "media_type 을 믿지 않는다" 가 한쪽에서만 지켜진다.
+
+#: 한 장의 상한. 화면 캡처 한 장이 이보다 클 이유가 없다.
+_MAX_SHOT_BYTES = 8 * 1024 * 1024
+#: 한 턴의 장수 상한.
+_MAX_SHOTS_PER_TURN = 4
+
+#: 덧붙인 경로 앞에 놓는 표시. `claude` 에게 이것이 무엇이고 무엇을 하라는
+#: 것인지 한 줄로 말해 준다.
+_SHOT_MARKER = "[첨부 이미지 — Read 로 확인할 것]"
+
+#: (매직 바이트, 확장자). 확장자도 **여기서** 정한다 — 클라이언트가 준 이름을
+#: 쓰지 않기로 한 이상, 확장자만 클라이언트에서 받아 올 이유가 없다.
+_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+)
+
+_SHOT_UNREADABLE_MSG = (
+    "붙인 이미지를 읽을 수 없습니다. 화면을 다시 캡처해 붙여넣어 주세요."
+)
+
+_SHOT_NOT_AN_IMAGE_MSG = (
+    "이미지 파일이 아닙니다 — PNG·JPEG·WebP 만 붙일 수 있습니다. "
+    "화면을 다시 캡처해 붙여넣어 주세요."
+)
+
+
+def image_suffix(raw: bytes) -> str | None:
+    """실제 바이트로 판정한 확장자. 이미지가 아니면 `None`.
+
+    **`media_type` 을 믿지 않는다.** 그 값은 요청자가 정하는데, 이 경로의
+    끝은 디스크에 떨어지는 파일이다 — "image/png" 라고 적힌 실행 파일을
+    그대로 써 줄 이유가 없다.
+    """
+    for magic, suffix in _IMAGE_MAGIC:
+        if raw.startswith(magic):
+            return suffix
+    # WebP 는 앞 네 바이트가 컨테이너 이름(RIFF)이라 그것만으로는 판정할 수
+    # 없다 — 8..12 바이트의 형식 이름까지 봐야 한다.
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
+def decode_shots(items: object) -> tuple[list[bytes], str | None]:
+    """요청이 실어 보낸 이미지를 검증하고 원시 바이트로 푼다.
+
+    두 번째 값이 `None` 이 아니면 그것이 **사용자에게 그대로 보일 한국어
+    거절 사유**다. 하나라도 걸리면 그 턴은 통째로 거절한다 — 일부만 붙은
+    채로 도는 것이 사용자에겐 가장 헷갈린다(무엇이 빠졌는지 화면에 안
+    나온다).
+    """
+    if items is None:
+        return [], None
+    if not isinstance(items, list):
+        return [], _SHOT_UNREADABLE_MSG
+    if len(items) > _MAX_SHOTS_PER_TURN:
+        return [], (f"이미지는 한 번에 {_MAX_SHOTS_PER_TURN}장까지 붙일 수 있습니다. "
+                    f"몇 장을 빼고 다시 보내세요.")
+    out: list[bytes] = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("data"), str):
+            return [], _SHOT_UNREADABLE_MSG
+        try:
+            raw = base64.b64decode(item["data"], validate=True)
+        except (binascii.Error, ValueError):
+            return [], _SHOT_UNREADABLE_MSG
+        if len(raw) > _MAX_SHOT_BYTES:
+            return [], (f"이미지 한 장은 {_MAX_SHOT_BYTES // (1024 * 1024)}MB까지입니다. "
+                        f"더 작게 잘라서 다시 붙여넣어 주세요.")
+        if image_suffix(raw) is None:
+            return [], _SHOT_NOT_AN_IMAGE_MSG
+        out.append(raw)
+    return out, None
+
+
+def _write_shots(images: Sequence[bytes] | None) -> tuple[Path | None, list[Path]]:
+    """이미지를 임시 폴더에 쓰고 `(폴더, 경로들)` 을 돌려준다.
+
+    **저장 위치는 지식 루트 밖이다.** 안에 두면 "백엔드는 지식 DB 에 쓰지
+    않는다" 를 디스크 바이트로 지키는 스냅숏 가드가 그 자리에서 실패한다 —
+    그리고 그게 그 가드의 요점이다. 임시 폴더는 애초에 지식 루트와 겹치지
+    않는다.
+
+    턴마다 새 폴더를 판다: 이름이 겹칠 일이 없고, 정리가 폴더 하나 지우기로
+    끝나며, 정리에 실패하더라도 다른 턴의 파일을 건드릴 수 없다.
+    """
+    if not images:
+        return None, []
+    directory = Path(tempfile.mkdtemp(prefix="qatc-shots-"))
+    paths: list[Path] = []
+    for raw in images:
+        # **이름은 서버가 만든다.** 클라이언트가 준 이름을 쓰면 이 경로가
+        # 통째로 요청자 제어가 된다. 확장자는 바이트로 판정한 값이다
+        # (`decode_shots` 를 통과한 것만 여기 오므로 `None` 일 수 없지만,
+        # 그 가정이 깨져도 엉뚱한 확장자를 만들지 않게 기본값을 둔다).
+        path = directory / f"qatc-shot-{uuid.uuid4()}{image_suffix(raw) or '.png'}"
+        path.write_bytes(raw)
+        paths.append(path)
+    return directory, paths
+
+
+def _with_shot_paths(message: str, paths: Sequence[Path]) -> str:
+    """사용자 문장 뒤에 첨부 경로를 덧붙인다. 첨부가 없으면 문장 그대로.
+
+    문장이 **먼저** 온다. 경로 목록으로 시작하면 사용자가 실제로 한 말이
+    파일 목록에 묻힌다.
+    """
+    if not paths:
+        return message
+    return message + "\n\n" + _SHOT_MARKER + "\n" + "\n".join(str(p) for p in paths)
+
+
+def _discard_shots(directory: Path | None) -> None:
+    """임시 폴더를 통째로 지운다. 실패해도 턴을 깨뜨리지 않는다.
+
+    화면에 있던 것이 그대로 들어간 파일이다 — 남겨 두면 사용자가 한 번
+    보여주고 끝냈다고 생각한 것이 임시 폴더에 계속 쌓인다.
+    """
+    if directory is None:
+        return
+    shutil.rmtree(directory, ignore_errors=True)
+
+
 # --- 턴 스트리밍 --------------------------------------------------------------
 
 
 def stream_turn(
+    cfg: AppConfig,
+    message: str,
+    content: str | None,
+    *,
+    images: Sequence[bytes] | None = None,
+    claude: str | list[str] | None = None,
+) -> Iterator[ChatEvent]:
+    """한 턴. 첨부 이미지가 있으면 임시 파일로 쓰고, 끝나면 반드시 지운다.
+
+    첨부의 수명을 이 얇은 껍데기 하나가 통째로 쥔다. 두 가지 이유로 안쪽이
+    아니라 여기다.
+
+    1. 안쪽(`_stream_turn`)은 세션 복구 때문에 자식 프로세스를 **두 번** 띄울
+       수 있다. 그 사이에 파일이 사라지면 재시도만 첨부 없이 도는데, 화면에는
+       아무 표시도 안 난다.
+    2. `finally` 이므로 소비자가 스트림을 도중에 끊어도(브라우저가 SSE 연결을
+       끊으면 Werkzeug 가 이 제너레이터를 닫는다) 정리가 돈다. 화면에 있던
+       것이 그대로 들어간 파일이라, "실패했을 때만 안 지워진다" 는 남겨 둘
+       수 있는 종류의 빈틈이 아니다.
+    """
+    directory, paths = _write_shots(images)
+    try:
+        yield from _stream_turn(cfg, _with_shot_paths(message, paths), content,
+                                claude=claude)
+    finally:
+        _discard_shots(directory)
+
+
+def _stream_turn(
     cfg: AppConfig,
     message: str,
     content: str | None,
