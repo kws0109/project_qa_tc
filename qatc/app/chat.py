@@ -218,6 +218,24 @@ _MAX_SHOT_BYTES = 8 * 1024 * 1024
 #: 한 턴의 장수 상한.
 _MAX_SHOTS_PER_TURN = 4
 
+#: 첨부를 두는 폴더 (저장소 바로 아래). 턴마다 그 안에 하위 폴더를 판다.
+#:
+#: **저장소 안이어야 한다.** 자식은 `cwd=project_root()` 로 뜨고, 그 **밖**의
+#: 파일은 `Read` 에 승인이 필요하다 — 헤드리스 실행에는 그 창에 답할 주체가
+#: 없다. 실측(라이브 확인): `%TEMP%` 에 두었더니 진짜 `claude` 가 그 자리에서
+#: 막혔고(`Claude requested permissions to read from ...`), 우회로 `cp` 도
+#: Bash 가 거부했다("may only copy files to/from the allowed working
+#: directories for this session"). 경로가 메시지에 실려 도착해도 열 수 없으면
+#: 첨부는 아무 일도 안 한 것이다 — 그런데 단위 테스트는 전부 초록이었다,
+#: 경로가 **닿는지**만 봤기 때문이다.
+#:
+#: **그리고 지식 루트 밖이어야 한다** (무쓰기 스냅숏 가드). 두 조건은 함께
+#: 만족된다: 이 폴더는 `knowledge/` 의 형제다.
+#:
+#: 예전에 `.qatc-tmp/` 가 거부됐던 것과 헷갈리지 말 것 — 그때는 `claude` 가
+#: 거기에 **쓰려고** 했다. 여기서는 백엔드가 쓰고 `claude` 는 읽기만 한다.
+_SHOTS_DIRNAME = ".qatc-shots"
+
 #: 덧붙인 경로 앞에 놓는 표시. `claude` 에게 이것이 무엇이고 무엇을 하라는
 #: 것인지 한 줄로 말해 준다.
 _SHOT_MARKER = "[첨부 이미지 — Read 로 확인할 것]"
@@ -298,10 +316,15 @@ def _write_shots(images: Sequence[bytes] | None) -> tuple[Path | None, list[Path
 
     턴마다 새 폴더를 판다: 이름이 겹칠 일이 없고, 정리가 폴더 하나 지우기로
     끝나며, 정리에 실패하더라도 다른 턴의 파일을 건드릴 수 없다.
+
+    위치는 `_SHOTS_DIRNAME` 이 정한다 — 자식이 읽을 수 있으면서 지식 루트
+    밖인 자리여야 하는 이유는 그쪽에 적었다.
     """
     if not images:
         return None, []
-    directory = Path(tempfile.mkdtemp(prefix="qatc-shots-"))
+    shots_root = project_root() / _SHOTS_DIRNAME
+    shots_root.mkdir(parents=True, exist_ok=True)
+    directory = Path(tempfile.mkdtemp(prefix="turn-", dir=str(shots_root)))
     paths: list[Path] = []
     for raw in images:
         # **이름은 서버가 만든다.** 클라이언트가 준 이름을 쓰면 이 경로가

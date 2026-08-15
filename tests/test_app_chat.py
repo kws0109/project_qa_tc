@@ -1300,3 +1300,51 @@ def test_the_image_path_reaches_the_child_argv_or_message(cfg, tmp_path):
                 if ln.strip().lower().endswith(".png")]
     assert len(attached) == 1, f"첨부 경로가 메시지에 없습니다: {text!r}"
     assert Path(attached[0]).is_absolute(), "상대 경로는 자식의 cwd 에 따라 달라진다"
+
+
+def test_the_attachment_lives_where_the_child_can_read_it(cfg):
+    """경로가 닿기만 해서는 안 된다 — 자식이 **열 수 있어야** 한다.
+
+    실측(라이브 확인): 첨부를 `%TEMP%` 에 두었더니 진짜 `claude` 가 그 자리에서
+    막혔다 — `Claude requested permissions to read from ...`. 헤드리스 실행에는
+    그 승인 창에 답할 주체가 없으므로 턴이 그대로 끝난다. 우회로 `cp` 도 Bash 가
+    거부했다: *"may only copy files to/from the allowed working directories for
+    this session"*. 자식은 `cwd=project_root()` 로 뜨고, 읽기도 그 안이어야 한다.
+
+    **이 결함은 단위 테스트가 전부 초록인 채로 살아 있었다** — 경로가 메시지에
+    실려 닿는지만 봤기 때문이다. 그래서 "닿는다" 와 "열린다" 를 각각 고정한다.
+
+    동시에 지식 루트 **밖**이어야 한다 (무쓰기 스냅숏 가드). 두 조건은 함께
+    만족된다: `.qatc-shots/` 는 저장소 안에 있고 `knowledge/` 의 형제다.
+    """
+    import io
+    from pathlib import Path
+
+    from PIL import Image
+
+    from qatc.app.chat import _discard_shots, _write_shots
+
+    buf = io.BytesIO()
+    Image.new("RGB", (2, 2), (0, 0, 0)).save(buf, format="PNG")
+
+    directory, paths = _write_shots([buf.getvalue()])
+    try:
+        assert len(paths) == 1
+        written = paths[0].resolve()
+        assert written.exists()
+        assert written.is_relative_to(Path(project_root()).resolve()), (
+            f"자식이 승인 없이 열 수 없는 자리입니다: {written}")
+        assert not written.is_relative_to(cfg.knowledge_path.resolve()), (
+            f"지식 루트 안입니다 — 무쓰기 가드가 깨집니다: {written}")
+
+        # **기본 설정의 지식 루트와도 겹치면 안 된다.** 위 `cfg` 는 스크래치를
+        # 가리키므로 그것만 보면 저장 위치를 `<repo>/knowledge` 로 바꿔도 아무
+        # 테스트도 안 깨진다 — 실제 사용자 설정에서는 바로 그 폴더가 지식
+        # 루트인데도 (실측: 그 변이가 이 파일과 `test_app_server.py` 의 첨부
+        # 테스트를 모두 통과했다). 기본값이 곧 대부분의 실사용 값이다.
+        default_root = Path(AppConfig().knowledge_root).resolve()
+        assert not written.is_relative_to(default_root), (
+            f"기본 지식 루트 안입니다: {written}")
+    finally:
+        _discard_shots(directory)
+    assert not paths[0].exists()
