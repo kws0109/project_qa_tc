@@ -15,6 +15,10 @@
  * `error` 프레임은 `done` 이 아니다. 인증 만료(`data.kind === "auth"`)는
  * 성공한 것처럼 보이는 유일한 실패 모양이므로, 여기서 절대 재조회를
  * 트리거하지 않는다.
+ *
+ * `notice` 프레임은 오류도 `done` 도 아니다 — 앱이 사용자에게 하는 말이고,
+ * 그 턴은 계속 진행된다. 그래서 이 프레임만으로는 입력을 풀지도, 패널을
+ * 다시 읽지도 않는다.
  */
 
 const state = {
@@ -442,6 +446,15 @@ function appendErrorMessage(message) {
   scrollChatToBottom();
 }
 
+// 앱이 사용자에게 하는 말. 오류가 아니다 — 이 줄이 나와도 그 턴은 계속
+// 진행되어 `done` 으로 끝나고 패널도 갱신된다. 그래서 말풍선(모델이 한 말)
+// 과도, 빨간 오류 줄과도 다르게 그린다: 옅은 가운데 한 줄.
+function appendNoticeMessage(message) {
+  const log = document.getElementById("chat-log");
+  log.appendChild(el("div", { class: "msg msg-notice" }, [el("p", { text: message })]));
+  scrollChatToBottom();
+}
+
 function setTurnInProgress(value) {
   turnInProgress = value;
   document.getElementById("chat-send").disabled = value;
@@ -468,6 +481,10 @@ function handleChatFrame(frame, turn) {
     appendAssistantDelta(turn, data.text || "");
   } else if (kind === "tool") {
     appendToolCall(turn, data.name || "", data.summary || "");
+  } else if (kind === "notice") {
+    // 알림은 턴을 끝내지 않는다 — `setTurnInProgress` 도 재조회도 여기서
+    // 하지 않는다. 뒤이어 오는 `done`/`error` 가 그 판단을 한다.
+    appendNoticeMessage(data.message || "");
   } else if (kind === "done") {
     // 턴이 정상적으로 끝났다 — 이때만 다시 읽는다.
     setTurnInProgress(false);
@@ -518,7 +535,17 @@ async function submitMessage() {
       body: JSON.stringify({ message: text, content: state.selectedContent }),
     });
     if (!resp.ok || !resp.body) {
-      appendErrorMessage(`요청이 실패했습니다 (${resp.status}).`);
+      // 서버가 왜 거절했는지 한국어로 실어 보냈으면 그걸 그대로 보여준다 —
+      // 상태 코드만 보여주면 사용자가 할 수 있는 일이 없다.
+      let body = null;
+      try {
+        body = await resp.json();
+      } catch (err) {
+        body = null;
+      }
+      appendErrorMessage(
+        body && body.error ? body.error : `요청이 실패했습니다 (${resp.status}).`
+      );
       setTurnInProgress(false);
       return;
     }

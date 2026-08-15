@@ -254,6 +254,23 @@ button, textarea, input {
   max-width: none;
 }
 
+/* 앱이 사용자에게 하는 말. 모델이 한 말(말풍선)도, 실패(빨강)도 아니다 —
+   가운데 정렬한 옅은 한 줄로, 대화의 흐름 밖에 있다는 것이 한눈에 보이게
+   한다. 말풍선처럼 그리면 "모델이 갑자기 앱 이야기를 한다" 로 읽힌다. */
+.msg-notice {
+  align-self: center;
+  max-width: none;
+  padding: 4px 12px;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  text-align: center;
+}
+
 .tool-call {
   font-family: var(--mono);
   font-size: 0.8rem;
