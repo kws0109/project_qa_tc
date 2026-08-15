@@ -949,3 +949,36 @@ def test_the_temp_image_is_deleted_after_the_turn(app, monkeypatch):
     assert seen[0]["existed"] == paths      # 턴 중에는 있었고
     still = [p for p in paths if os.path.exists(p)]
     assert still == [], f"턴이 끝났는데 남아 있습니다: {still}"
+
+
+# --- 화면이 "이 분모는 늘 수 있다" 를 실제로 말한다 -------------------------
+
+
+def test_the_tree_shows_that_the_denominator_can_grow(app):
+    """`/api/tree` 가 `base_total` 을 실어 보내도 화면이 안 쓰면 아무것도 안 바뀐다.
+
+    그래서 값을 **읽는 자리**(늘어난 개수를 계산하는 함수)와 **그리는 자리**
+    (그 사실을 적는 문구), 그리고 그것을 다르게 그리는 스타일 규칙까지 본다.
+    셋 중 하나만 빠져도 사용자에게는 예전과 똑같은 `8 / 14` 만 보인다.
+
+    **주석을 먼저 걷어낸다.** 실측: `addedSlotCount` 의 본문을 `return 0;` 로
+    바꾸는 변이가 이 테스트를 그대로 통과했다 — 그 함수 안의 주석이 아직
+    `base_total` 을 언급하고 있었기 때문이다. 주석은 코드가 아니다.
+    """
+    import re
+
+    def without_comments(text):
+        # 이 화면은 외부 주소를 쓰지 않으므로(`test_the_page_loads_nothing_
+        # from_the_network`) `//` 를 지워도 URL 을 다치게 할 일이 없다.
+        return re.sub(r"//[^\n]*", "", text)
+
+    c = app.test_client()
+    js = without_comments(c.get("/static/app.js").get_data(as_text=True))
+
+    m = re.search(r"function\s+addedSlotCount\s*\([^)]*\)\s*\{([\s\S]*?)\n\}", js)
+    assert m, "늘어난 슬롯 수를 계산하는 자리가 없습니다"
+    assert "content.base_total" in m.group(1), "그 계산이 base_total 을 안 씁니다"
+
+    assert "추가됨" in js, "늘어난 사실을 적는 문구가 없습니다"
+    assert "content-added" in c.get("/static/app.css").get_data(as_text=True), (
+        "늘어난 표시를 그리는 스타일 규칙이 없습니다")

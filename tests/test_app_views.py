@@ -344,3 +344,30 @@ def test_tree_db_mtime_carries_the_real_mtime_and_moves_when_the_db_changes(cfg)
     second = tree(cfg)["db_mtime"]["starrail"]
     assert second == db.stat().st_mtime
     assert second != first, "DB 가 바뀌었는데 db_mtime 이 그대로다 — 트리가 안 갱신된다"
+
+
+# --- 분모가 한도처럼 보이지 않게 --------------------------------------------
+#
+# `8 / 10` 은 10이 고정 상한처럼 읽힌다. 실제로는 유형별 슬롯과 `slot add` 로
+# 늘어나고, 첫 실사용에서 사용자가 슬롯을 늘릴 수 있다는 것을 몰랐던 이유의
+# 하나가 이 표시였다. 진척 자체는 여전히 filled/total 이다 — 화면이 "이 숫자는
+# 늘 수 있다" 를 말할 수 있게 기준선만 함께 실어 준다.
+
+
+def test_tree_reports_base_total_alongside_total(cfg):
+    """유형·추가 슬롯으로 늘어난 만큼을 화면이 구분할 수 있어야 한다."""
+    from qatc.knowledge.slots import BASE_SLOTS
+
+    assert len(BASE_SLOTS) == 10        # 아래 수들의 출처
+
+    _seed(cfg)                          # 기본 10 + 유형 편성 4
+    c = tree(cfg)["games"][0]["contents"][0]
+    assert c["total"] == 14
+    assert c["base_total"] == len(BASE_SLOTS)
+
+    # `slot add` 로 하나 더 = total 15, base_total 은 그대로 10.
+    with KnowledgeStore(cfg.knowledge_path / "starrail.db") as st:
+        st.add_slot("파티편성", "자동로그인", "자동 로그인이 유지되는가", "정상 경로")
+    c = tree(cfg)["games"][0]["contents"][0]
+    assert c["total"] == 15
+    assert c["base_total"] == len(BASE_SLOTS), "추가 슬롯이 기준선까지 밀어 올렸습니다"

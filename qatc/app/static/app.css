@@ -134,6 +134,22 @@ button, textarea, input {
   white-space: nowrap;
 }
 
+/* 진척 숫자 옆에 붙는 작은 표시. 진척(`8 / 14`)과 **다르게** 그린다 —
+   같은 무게로 그리면 셋째 숫자가 하나 더 있는 것처럼 읽혀서, 알리려던
+   "이 분모는 늘 수 있다" 가 오히려 더 헷갈리게 된다. */
+.content-added {
+  font-size: 0.72rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+/* 표시가 하나 늘었으므로 좁은 패널에서는 줄을 바꾼다 — 넘치면 컨텐츠
+   이름이 잘린다. */
+.content-head { flex-wrap: wrap; }
+
 .families {
   margin: 8px 0 4px 8px;
   padding-left: 10px;

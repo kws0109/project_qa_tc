@@ -133,6 +133,18 @@ function renderTree() {
   }
 }
 
+// `8 / 10` 은 10이 고정 상한처럼 읽힌다. 실제로는 유형별 슬롯과 `slot add` 로
+// 늘어난다 — 첫 실사용에서 사용자가 슬롯을 늘릴 수 있다는 것을 몰랐던 이유의
+// 하나가 이 표시였다. 기본 세트보다 많으면 그 사실을 함께 적어, 이 숫자가 늘
+// 수 있는 값임을 알린다. **진척 자체는 여전히 filled/total 이다** — 여기서
+// 하는 일은 그 이상이 아니다.
+function addedSlotCount(content) {
+  // 기준선은 백엔드가 실어 보낸다(`base_total`). 화면이 기본 슬롯 개수를
+  // 따로 알고 있으면 세트가 바뀔 때 조용히 어긋난다.
+  if (typeof content.base_total !== "number") return 0;
+  return Math.max(0, content.total - content.base_total);
+}
+
 function renderContentRow(game, content) {
   const isSelected = state.selectedGame === game && state.selectedContent === content.name;
   const contentEl = el("div", {
@@ -145,6 +157,15 @@ function renderContentRow(game, content) {
     class: "content-progress",
     text: `${content.filled} / ${content.total}`,
   }));
+  const added = addedSlotCount(content);
+  if (added > 0) {
+    head.appendChild(el("span", {
+      class: "content-added",
+      text: `+${added} 추가됨`,
+      title: `기본 항목 ${content.base_total}개에 ${added}개가 더해졌습니다.`
+        + " 이 분모는 고정된 한도가 아닙니다 — 필요하면 더 늘릴 수 있습니다.",
+    }));
+  }
   contentEl.appendChild(head);
   if (isSelected) {
     contentEl.appendChild(renderFamilies(content));

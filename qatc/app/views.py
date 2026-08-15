@@ -8,6 +8,7 @@ from pathlib import Path
 from ..config import AppConfig
 from ..knowledge.gate import plan_families, withdrawn_families
 from ..knowledge.models import SlotStatus
+from ..knowledge.slots import BASE_SLOTS
 from ..knowledge.store import KnowledgeStore, testcase_hash
 
 
@@ -113,6 +114,11 @@ def tree(cfg: AppConfig) -> dict:
                     "types": list(c.types),
                     "filled": sum(1 for s in slots if s.status is SlotStatus.FILLED),
                     "total": len(slots),
+                    # 모든 컨텐츠가 공통으로 받는 기준선. 유형별 슬롯과 나중에
+                    # 더한 항목이 이 위로 쌓인다. **화면이 계산하지 않게** 여기서
+                    # 실어 보낸다 — 프런트가 기본 슬롯 개수를 따로 알고 있으면
+                    # 세트가 바뀔 때 조용히 어긋난다.
+                    "base_total": len(BASE_SLOTS),
                     "families": fams,
                 })
         games.append({"game": p.stem, "contents": contents})
