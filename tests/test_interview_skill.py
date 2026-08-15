@@ -765,3 +765,85 @@ def test_skill_typo_claim_matches_what_both_command_families_do(cfg_env, capsys)
     assert ("생성 명령(`slot init` · `knowledge` · `config --game`)은 `profiles/` 와 "
             "대조하고, 읽기 명령은 대조하지 않는 대신 그 이름의 DB 파일이 없으면 "
             "만들지 않고 멈춘다") in step1
+
+
+# --- 3단계: TC 생성 명령이 실제로 실행 가능한가 (최종 리뷰 확정 결함 1) ------
+
+
+def _fenced_block(text: str, lang: str, *, after: str) -> str:
+    """`after` 가 처음 나온 뒤의 첫 ```<lang> 코드펜스 본문을 돌려준다."""
+    tail = text.split(after, 1)[1]
+    return tail.split(f"```{lang}\n", 1)[1].split("```", 1)[0]
+
+
+def test_skill_never_pipes_json_through_a_shell_heredoc():
+    """heredoc 은 `claude` 내장 Bash 검사가 **결정론적으로** 거부한다.
+
+    TC 생성 페이로드는 항상 `{"testcases":` 로 시작하므로 heredoc 본문의
+    중괄호가 따옴표 밖에서 열린다. `claude` 바이너리의 명령 분류기는 그
+    모양을 `Contains brace with quote character (expansion obfuscation)` 로
+    보고 **명령을 하위 명령으로 쪼개기 전에** 거부한다 — 그래서 프로젝트
+    allowlist(`Bash(.venv/Scripts/qatc.exe tc *)`)는 조회조차 되지 않는다.
+    헤드리스(`-p`)에는 승인 창에 답할 주체가 없으므로 그대로 `is_error`다.
+
+    TC 생성은 이 도구의 존재 이유다 — 이 형태가 문서에 남아 있으면 인터뷰가
+    **매번** 마지막 단계에서 죽는다. 다른 stdin 경로(`echo` 파이프처럼
+    따옴표 안에 중괄호가 든 형태)는 이 규칙에 걸리지 않으므로, 금지 대상은
+    heredoc 연산자 자체다.
+    """
+    text = SKILL.read_text(encoding="utf-8")
+    assert "<<" not in text, (
+        "SKILL.md 가 heredoc(`<<`)으로 JSON 을 파이프합니다 — "
+        "claude 내장 Bash 검사가 이 형태를 거부하므로 임시 파일에 쓰고 "
+        "`--json <경로>` 로 넘기세요"
+    )
+
+
+def test_skill_feeds_tc_add_a_json_file_path_not_stdin():
+    """`tc add` 는 `--json <파일 경로>` 로 불러야 한다 — `--json -` 이 아니다.
+
+    `-`(표준입력)를 쓰는 순간 셸에서 JSON 을 흘려 넣을 방법이 필요해지고,
+    그 방법이 곧 위 heredoc 이다. 경로를 넘기면 그 문제 자체가 사라진다.
+    """
+    text = SKILL.read_text(encoding="utf-8")
+    adds = [i for i in _executed_invocations(text) if " tc add " in i]
+    assert adds, "SKILL.md 에 실행 가능한 `tc add` 호출이 없습니다"
+    for inv in adds:
+        assert "--json -" not in inv, f"표준입력으로 받습니다: {inv!r}"
+        m = re.search(r"--json\s+(\S+)", inv)
+        assert m, f"`--json` 인자가 없습니다: {inv!r}"
+        assert m.group(1).endswith(".json"), (
+            f"`--json` 인자가 파일 경로가 아닙니다: {inv!r}"
+        )
+
+
+def test_the_documented_tc_add_command_actually_runs(cfg_env, capsys, tmp_path):
+    """문서에 적힌 그 명령줄과 그 JSON 예시를 **그대로 실행**해 rc=0 을 확인한다.
+
+    앞의 두 테스트는 "heredoc 이 아니다" 라는 형태만 본다. 형태가 맞아도
+    플래그 이름이나 페이로드 모양이 CLI 와 어긋나면 인터뷰는 똑같이
+    마지막 단계에서 죽는다 — 그래서 문서에서 뽑은 명령줄과 문서에서 뽑은
+    JSON 을 실제 CLI 에 먹인다. 문서만 고치고 CLI 를 안 고치거나 그 반대여도
+    여기서 깨진다.
+    """
+    import shlex
+
+    text = SKILL.read_text(encoding="utf-8")
+    payload = _fenced_block(text, "json", after="계열마다 한 번씩 실행한다")
+    cmdline = next(i for i in _executed_invocations(text) if " tc add " in i)
+
+    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    assert main(["slot", "set", "파티편성", "core_action",
+                 "--status", "filled", "--value", "파티를 편성한다"]) == 0
+    capsys.readouterr()
+
+    json.loads(payload)                      # 문서의 예시가 유효한 JSON 인가
+    tc_json = tmp_path / "정상경로.json"
+    tc_json.write_text(payload, encoding="utf-8")
+
+    argv = shlex.split(cmdline)[1:]          # 실행 파일 경로를 뗀다
+    argv = ["파티편성" if a == "<컨텐츠>" else a for a in argv]
+    argv[argv.index("--json") + 1] = str(tc_json)
+
+    assert main(argv) == 0, capsys.readouterr().out
+    assert "TC 1건 저장" in capsys.readouterr().out

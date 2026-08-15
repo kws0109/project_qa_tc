@@ -171,16 +171,27 @@ description: 게임 컨텐츠 QA 인터뷰를 진행한다. 사용자가 컨텐�
 `planned` 에 있는 계열만 작성한다. **`skipped` 에 있는 계열은 절대 만들지 않는다** —
 만들어도 `tc add` 가 거부한다.
 
-계열마다 한 번씩 실행한다:
+계열마다 한 번씩 실행한다. **JSON 은 셸로 흘려 넣지 않는다 — `Write` 도구로
+임시 파일에 먼저 쓰고, 그 경로를 `--json` 에 넘긴다.** 셸 heredoc 으로 표준입력에
+파이프하면 `claude` 내장 Bash 검사가 `Contains brace with quote character` 로 명령을
+통째로 거부한다(페이로드가 늘 `{"testcases":` 로 시작해 중괄호가 따옴표 밖에서
+열리기 때문이다). 이 거부는 프로젝트 allowlist 로 구제되지 않고, 승인 창에 답할
+주체가 없는 실행에서는 그 자리에서 턴이 끝난다.
 
-```bash
-.venv/Scripts/qatc.exe tc add <컨텐츠> --family "정상 경로" --origin interview --json - <<'JSON'
+먼저 `Write` 도구로 `.qatc-tmp/<계열>.json` 에 이 모양을 쓴다:
+
+```json
 {"testcases": [
   {"title": "...", "precondition": "...",
    "steps": ["..."], "expected": ["..."],
    "rationale": "core_action 슬롯: '<사용자 진술 인용>'에서 도출"}
 ]}
-JSON
+```
+
+그 다음 그 경로를 `--json` 에 넘겨 실행한다:
+
+```bash
+.venv/Scripts/qatc.exe tc add <컨텐츠> --family "정상 경로" --origin interview --json .qatc-tmp/정상경로.json
 ```
 
 `--origin` 을 정확히 고른다:
