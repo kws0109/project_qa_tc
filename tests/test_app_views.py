@@ -214,3 +214,116 @@ def test_everything_is_json_serialisable(cfg):
     name = _seed(cfg)
     json.dumps(tree(cfg), ensure_ascii=False)
     json.dumps(content_detail(cfg, "starrail", name), ensure_ascii=False)
+
+
+# --- `game` 은 URL 질의 문자열이다 (최종 리뷰 확정 결함 3) -------------------
+
+
+def _foreign_db(path):
+    """지식 루트 **밖**에 있는 남의 SQLite 파일을 하나 만든다."""
+    import sqlite3
+
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT)")
+    con.execute("INSERT INTO notes(body) VALUES ('남의 소중한 메모')")
+    con.commit()
+    con.close()
+    return path.read_bytes()
+
+
+def _hostile_games(victim):
+    """지식 루트를 벗어나려는 `game` 값들. 뒤 이름은 실패 메시지용."""
+    stem = str(victim)[: -len(".db")]
+    return [
+        ("../victimF", "상위 디렉터리"),
+        ("..\victimF", "역슬래시 상위 디렉터리"),
+        ("./../victimF", "점 하나를 낀 상위 디렉터리"),
+        (stem, "절대 경로 (드라이브 문자)"),
+        (stem.replace("\\", "/"), "슬래시로 쓴 절대 경로"),
+        ("sub/victimF", "하위 디렉터리"),
+        ("starrail\x00", "NUL 을 붙인 이름"),
+        ("..", "점 둘"),
+        ("", "빈 이름"),
+    ]
+
+
+def test_content_detail_never_touches_a_file_outside_the_knowledge_root(cfg, tmp_path):
+    """`game` 을 경로 조각으로 그대로 쓰면 디스크의 아무 SQLite 파일에나 쓴다.
+
+    실측(최종 리뷰): `GET /api/content?game=../../victimF&name=x` 가 **404 를
+    돌려주면서** 지식 루트 밖 남의 SQLite 파일을 8192 → 32768 바이트로 키우고
+    `contents`·`slots`·`testcases` 테이블을 심었다. 404 라서 아무 일도 없었던
+    것처럼 보이는 것이 이 결함의 핵심이다.
+
+    원인은 `KnowledgeStore.open()` 이 연결과 동시에 `executescript(_SCHEMA)`
+    + `commit()` 을 돌린다는 것 — **경로를 여는 행위 자체가 쓰기다.** 그래서
+    "예외가 났다" 는 아무 증거도 되지 못하고, 남의 파일 바이트를 직접
+    비교해야 한다. `pathlib` 의 결합은 오른쪽이 절대 경로면 왼쪽을 통째로
+    버리므로 `..` 뿐 아니라 절대 경로 형태도 함께 막혀야 한다.
+    """
+    _seed(cfg)
+    victim = tmp_path / "victimF.db"
+    before = _foreign_db(victim)
+
+    for game, label in _hostile_games(victim):
+        with pytest.raises(ContentNotFound):
+            content_detail(cfg, game, "아무거나")
+        assert victim.read_bytes() == before, f"{label}: 남의 파일이 바뀌었다 ({game!r})"
+
+
+def test_a_hostile_game_name_creates_no_file_anywhere(cfg, tmp_path):
+    """거부는 조용해야 한다 — 어디에도 새 파일을 남기지 않는다.
+
+    바이트 비교(위 테스트)는 **이미 있던** 파일만 지킨다. 없던 자리에 유령
+    DB 를 새로 만드는 경로는 그것만으로는 보이지 않는다.
+    """
+    _seed(cfg)
+    before = {p for p in tmp_path.rglob("*") if p.is_file()}
+
+    for game, label in _hostile_games(tmp_path / "없던파일.db"):
+        with pytest.raises(ContentNotFound):
+            content_detail(cfg, game, "아무거나")
+
+    after = {p for p in tmp_path.rglob("*") if p.is_file()}
+    assert after == before, f"새로 생긴 파일: {sorted(str(p) for p in after - before)}"
+
+
+def test_the_rejection_is_korean_and_names_the_next_action(cfg):
+    _seed(cfg)
+    with pytest.raises(ContentNotFound) as e:
+        content_detail(cfg, "../victimF", "아무거나")
+    msg = str(e.value)
+    assert "ContentNotFound" not in msg
+    assert "Traceback" not in msg
+    assert "게임" in msg
+    assert "왼쪽" in msg or "slot init" in msg      # 다음 조치를 말한다
+
+
+def test_a_legitimate_game_name_still_resolves(cfg):
+    """봉쇄가 정상 호출자를 막으면 안 된다 — 화면은 `p.stem` 만 나른다."""
+    name = _seed(cfg)
+    assert content_detail(cfg, "starrail", name)["game"] == "starrail"
+
+
+def test_tree_db_mtime_carries_the_real_mtime_and_moves_when_the_db_changes(cfg):
+    """`db_mtime` 은 장식이 아니다 — 화면의 트리 갱신 판정을 그것이 구동한다.
+
+    `app.js` 는 `db_mtime` 이 이전과 같으면 `renderTree()` 를 건너뛴다.
+    `mtimes[p.stem] = 0` 으로 바꿔도 494 가 통과했는데, 그 상태면 `changed`
+    가 영원히 거짓이라 첫 로드 뒤로는 트리가 다시는 안 그려진다 — 인터뷰를
+    끝내도 왼쪽 패널에 TC 가 나타나지 않는다. 키 집합만 보던 옛 단언은 그
+    변이를 못 잡았다(이월 항목 #1).
+
+    값이 실제 mtime 인지, 그리고 DB 가 바뀌면 **움직이는지**를 함께 본다 —
+    상수는 첫 단언에, 고정된 값은 둘째 단언에 걸린다.
+    """
+    name = _seed(cfg)
+    db = cfg.knowledge_path / "starrail.db"
+    first = tree(cfg)["db_mtime"]["starrail"]
+    assert first == db.stat().st_mtime
+
+    with KnowledgeStore(db) as st:
+        st.set_slot(name, "cost", SlotStatus.FILLED, "재화를 쓴다")
+    second = tree(cfg)["db_mtime"]["starrail"]
+    assert second == db.stat().st_mtime
+    assert second != first, "DB 가 바뀌었는데 db_mtime 이 그대로다 — 트리가 안 갱신된다"

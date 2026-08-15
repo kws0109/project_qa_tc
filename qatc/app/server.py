@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
+from urllib.parse import urlsplit
 
 from flask import Flask, Response, jsonify, request
 
@@ -22,8 +22,53 @@ from ..console import _p
 from ..export.tc_excel import ExportBlocked, export_tc_excel
 from ..knowledge.gate import plan_families, withdrawn_families
 from ..knowledge.store import KnowledgeStore
-from .chat import stream_turn
-from .views import ContentNotFound, content_detail, tree
+from .chat import ClaudeMissing, resolve_claude, stream_turn
+from .views import ContentNotFound, content_detail, resolve_db_path, tree
+
+
+def _reject_bad_chat_request(req):
+    """`/api/chat` 이 받아도 되는 요청인지 본다. 괜찮으면 `None`.
+
+    이 라우트는 실제 돈이 드는 턴을 띄우고(실측: 사소한 호출 하나에도
+    $0.369), 그 프롬프트는 지식 DB 로 가는 **유일한 정당 쓰기 경로**인
+    헤드리스 `claude` 에 그대로 들어간다. 그런데 예전엔 검증이 하나도
+    없었다 — 파싱 불가 본문·빈 본문·비-JSON 콘텐츠 타입이 전부
+    `message=""` 로 격하돼 턴이 그대로 돌았다.
+
+    세 가지를 본다.
+
+    1. **출처.** 로컬 전용 앱이므로 교차 출처 요청은 그냥 거절한다. CORS
+       응답 헤더로 막는 것으로는 부족하다 — `text/plain` 같은 단순 요청은
+       preflight 가 없어서, 브라우저가 응답을 **읽지 못할 뿐 요청은 이미
+       실행된다.** 즉 돈은 이미 쓰였다. 브라우저를 믿지 말고 서버가 실행
+       전에 막아야 한다. `Origin` 이 아예 없는 호출(로컬 스크립트·테스트
+       클라이언트)은 브라우저가 만든 것이 아니므로 통과시킨다.
+    2. **콘텐츠 타입.** JSON 이어야 한다. 이 검사만으로도 위의 단순 요청
+       경로가 한 번 더 막힌다(방어선 둘이 서로 독립이다).
+    3. **`message`.** 비어 있지 않은 문자열이어야 한다. 프런트는 이미 그
+       모양만 보낸다(`app.js` 가 `trim()` 후 빈 문자열을 막는다) — 서버
+       쪽 쌍둥이가 없었을 뿐이다.
+    """
+    origin = req.headers.get("Origin") or req.headers.get("Referer")
+    if origin and urlsplit(origin).netloc != req.host:
+        return jsonify({"error": "이 앱은 로컬에서만 씁니다. "
+                                 "브라우저에서 http://127.0.0.1 주소로 다시 여세요."}), 403
+    if not req.is_json:
+        return jsonify({"error": "요청 형식이 올바르지 않습니다. "
+                                 "브라우저를 새로고침한 뒤 다시 보내세요."}), 400
+    payload = req.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "요청 내용을 읽을 수 없습니다. "
+                                 "브라우저를 새로고침한 뒤 다시 보내세요."}), 400
+    message = payload.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return jsonify({"error": "보낼 내용이 비어 있습니다. "
+                                 "할 말을 입력한 뒤 다시 보내세요."}), 400
+    content = payload.get("content")
+    if content is not None and not isinstance(content, str):
+        return jsonify({"error": "컨텐츠 선택을 읽을 수 없습니다. "
+                                 "왼쪽 트리에서 컨텐츠를 다시 고르세요."}), 400
+    return None
 
 
 def create_app(cfg: AppConfig) -> Flask:
@@ -59,7 +104,13 @@ def create_app(cfg: AppConfig) -> Flask:
 
     @app.get("/api/health")
     def api_health():
-        if shutil.which("claude") is None:
+        # **`resolve_claude` 여야 한다.** 예전엔 여기서 `shutil.which("claude")`
+        # 를 보고 실행은 `Popen(["claude"], shell=False)` 로 했는데, Windows
+        # 에서 그 둘은 갈린다 — `which` 는 `PATHEXT` 를 존중해 `.cmd` 셰임까지
+        # 찾고 `CreateProcess` 는 `.exe` 만 붙인다. npm 식 설치본에서 배지가
+        # **연결됨** 인 채로 모든 턴이 죽었다. 실행과 같은 함수를 부르면 두
+        # 자리가 애초에 갈릴 수 없다.
+        if resolve_claude() is None:
             status = "missing"
         elif session_state["unauthenticated"]:
             status = "unauthenticated"
@@ -69,18 +120,32 @@ def create_app(cfg: AppConfig) -> Flask:
 
     @app.post("/api/chat")
     def api_chat():
+        rejection = _reject_bad_chat_request(request)
+        if rejection is not None:
+            return rejection
         payload = request.get_json(silent=True) or {}
-        message = payload.get("message", "")
+        message = payload["message"].strip()
         content = payload.get("content")
 
         def generate():
-            for ev in stream_turn(cfg, message, content):
-                if ev.kind == "error" and ev.data.get("kind") == "auth":
-                    session_state["unauthenticated"] = True
-                elif ev.kind == "done":
-                    session_state["unauthenticated"] = False
-                data = json.dumps(ev.data, ensure_ascii=False)
-                yield f"event: {ev.kind}\ndata: {data}\n\n"
+            try:
+                for ev in stream_turn(cfg, message, content):
+                    if ev.kind == "error" and ev.data.get("kind") == "auth":
+                        session_state["unauthenticated"] = True
+                    elif ev.kind == "done":
+                        session_state["unauthenticated"] = False
+                    data = json.dumps(ev.data, ensure_ascii=False)
+                    yield f"event: {ev.kind}\ndata: {data}\n\n"
+            except ClaudeMissing as exc:
+                # `stream_turn` 은 제너레이터라 이 예외는 첫 `next()` 에서
+                # 터진다 — 즉 응답 헤더(`text/event-stream`)가 이미 나간
+                # 뒤다. 잡지 않으면 Werkzeug 가 `text/html` 500 으로 바꾸고
+                # 프런트는 `요청이 실패했습니다 (500).` 만 렌더한다. 그러면
+                # 설치 방법이 적힌 **유일한** 한국어 문장이, 사용자가 그걸
+                # 읽어야 할 유일한 창에 도달하지 못한다.
+                data = json.dumps({"kind": "missing", "message": str(exc)},
+                                  ensure_ascii=False)
+                yield f"event: error\ndata: {data}\n\n"
 
         return Response(generate(), mimetype="text/event-stream")
 
@@ -95,7 +160,7 @@ def create_app(cfg: AppConfig) -> Flask:
             # xlsx 에 필요한 원본 도메인 객체(Enum·category_major 포함)를
             # 담지 않으므로 버리고, 아래에서 저장소를 다시 읽는다.
             content_detail(cfg, game, content)
-            with KnowledgeStore(cfg.knowledge_path / f"{game}.db") as st:
+            with KnowledgeStore(resolve_db_path(cfg, game)) as st:
                 cases = st.testcases(content)
                 slots = st.slots(content)
         except ContentNotFound as exc:
@@ -103,8 +168,16 @@ def create_app(cfg: AppConfig) -> Flask:
 
         _, skipped = plan_families(slots)
         withdrawn = withdrawn_families(slots, {tc.category_minor for tc in cases})
+        # `game`·`content` 는 둘 다 요청 본문에서 온다. `_safe_filename_part`
+        # 가 구분자를 지우지만, 그 함수는 "정리" 지 "봉쇄" 가 아니다 — 정말
+        # 지식 폴더 안에 떨어지는지는 만들어진 경로로 직접 확인한다. 결함 3
+        # (읽기 경로의 `game` 트래버설)이 정확히 "가운데 함수를 믿었다" 로
+        # 생긴 구멍이었다.
         out = (cfg.knowledge_path
                / f"{_safe_filename_part(game)}_{_safe_filename_part(content)}_TC.xlsx")
+        if out.resolve().parent != cfg.knowledge_path.resolve():
+            return jsonify({"error": "이름을 파일로 만들 수 없습니다. "
+                                     "컨텐츠 이름을 확인하고 다시 시도하세요."}), 400
         try:
             path = export_tc_excel(content, cases, skipped, out, withdrawn)
         except ExportBlocked as exc:

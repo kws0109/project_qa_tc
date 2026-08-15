@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from ..config import AppConfig
@@ -16,6 +17,54 @@ class ContentNotFound(Exception):
 
 def _db_paths(cfg: AppConfig) -> list[Path]:
     return sorted(cfg.knowledge_path.glob("*.db"))
+
+
+def resolve_db_path(cfg: AppConfig, game: str) -> Path:
+    """`game` 이 가리키는 지식 DB 경로. 지식 루트 밖은 절대 돌려주지 않는다.
+
+    `game` 은 `/api/content?game=…` 의 질의 문자열에서 곧장 온다. 예전에는
+    그 값을 `knowledge_path / f"{game}.db"` 로 그대로 이어 붙였는데,
+    `pathlib` 의 결합은 오른쪽이 절대 경로면 왼쪽을 통째로 버리고 `..` 도
+    그대로 통과시킨다. 그리고 `KnowledgeStore.open()` 은 연결과 동시에
+    `executescript(_SCHEMA)` + `commit()` 을 돌리므로 **경로를 여는 행위
+    자체가 쓰기다** — 즉 그 한 줄이 "백엔드는 지식 DB 에 쓰지 않는다" 를
+    디스크 전체로 넓혀 깨뜨렸다(실측: 지식 루트 밖 SQLite 파일이 8192 →
+    32768 바이트로 커지고 qatc 테이블 셋이 심겼다. 라우트는 404 로 답해서
+    아무 일도 없었던 것처럼 보였다).
+
+    그래서 이름의 생김새를 흉내 내 검사하는 대신 **실재하는 DB 파일 목록과
+    대조한다.** `p.stem` 은 구분자도 `..` 도 드라이브 문자도 담을 수 없으니,
+    대조를 통과한 이름은 정의상 지식 루트 바로 아래 파일 하나다 — 새 형태의
+    경로 우회가 나와도 이 대조는 자동으로 막는다. 정상 호출자는 영향이
+    없다: 화면이 나르는 `game` 은 `/api/tree` 가 바로 그 `p.stem` 으로 만든
+    값뿐이다.
+    """
+    stems = {p.stem for p in _db_paths(cfg)}
+    if game not in stems:
+        raise ContentNotFound(_no_such_game(game, stems))
+    return cfg.knowledge_path / f"{game}.db"
+
+
+def _no_such_game(game: str, stems: set[str]) -> str:
+    """"그런 게임 DB 는 없다" 를 한국어로, 다음 조치와 함께.
+
+    경로 조각처럼 생긴 이름은 사용자가 직접 친 것이 아니다(화면은 트리가
+    준 이름만 나른다) — 그 값을 그대로 되비추면서 "`--game <그 값>` 으로
+    만드세요" 라고 하면 사용자를 엉뚱한 명령으로 보낸다. 그래서 그 경우엔
+    되비추지 않고 트리에서 고르라고만 말한다.
+    """
+    if game in _GAME_NAME_FORBIDDEN or _FORBIDDEN_IN_GAME_NAME.search(game):
+        return "게임 이름을 알아볼 수 없습니다. 왼쪽 트리에서 게임을 골라 다시 시도하세요."
+    return (
+        f"'{game}' 지식 DB가 없습니다. "
+        f"채팅에서 'qatc slot init <컨텐츠> --game {game}' 으로 먼저 만드세요."
+    )
+
+
+#: 게임 이름에 절대 들어올 수 없는 문자 — 경로 구분자·드라이브 콜론·NUL·제어문자.
+_FORBIDDEN_IN_GAME_NAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+#: 문자만으로는 걸러지지 않는 이름들 (빈 이름과 상대 경로 마디).
+_GAME_NAME_FORBIDDEN = {"", ".", ".."}
 
 
 def tree(cfg: AppConfig) -> dict:
@@ -58,12 +107,7 @@ def tree(cfg: AppConfig) -> dict:
 
 def content_detail(cfg: AppConfig, game: str, name: str) -> dict:
     """가운데·오른쪽이 함께 쓰는 상세."""
-    path = cfg.knowledge_path / f"{game}.db"
-    if not path.exists():
-        raise ContentNotFound(
-            f"'{game}' 지식 DB가 없습니다. "
-            f"채팅에서 'qatc slot init <컨텐츠> --game {game}' 으로 먼저 만드세요."
-        )
+    path = resolve_db_path(cfg, game)
     with KnowledgeStore(path) as st:
         c = st.get_content(name)
         if c is None:
