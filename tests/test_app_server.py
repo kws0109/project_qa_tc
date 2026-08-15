@@ -1097,3 +1097,38 @@ def test_an_unknown_game_is_a_korean_404(app, monkeypatch):
     r = app.test_client().post("/api/capture", json={"game": "없는게임"})
     assert r.status_code == 404
     assert "프로파일" in r.get_json()["error"]
+
+
+def test_the_capture_button_exists_and_says_what_it_does(app):
+    html = app.test_client().get("/").get_data(as_text=True)
+    assert 'id="capture-btn"' in html
+    assert "촬영" in html
+
+
+def test_the_capture_handler_feeds_the_existing_attachment_path(app):
+    """캡처 전용 업로드 경로가 생기면 검증이 한쪽에만 붙는다."""
+    import re
+
+    js = re.sub("//[^" + chr(10) + "]*", "",
+                app.test_client().get("/static/app.js").get_data(as_text=True))
+    m = re.search(r"async function captureShot\([^)]*\)\s*\{([\s\S]*?)" + chr(10) + r"\}", js)
+    assert m, "captureShot 을 찾을 수 없습니다"
+    body = m.group(1)
+    assert "/api/capture" in body, "캡처 엔드포인트를 부르지 않습니다"
+    assert "addImageFiles" in body, "기존 첨부 경로로 넣지 않습니다"
+
+
+def test_the_capture_button_is_disabled_while_capturing(app):
+    """연타하면 4장 상한이 순식간에 차고, 그 안내가 오히려 사용자를 헷갈리게 한다."""
+    import re
+
+    js = re.sub("//[^" + chr(10) + "]*", "",
+                app.test_client().get("/static/app.js").get_data(as_text=True))
+    m = re.search(r"async function captureShot\([^)]*\)\s*\{([\s\S]*?)" + chr(10) + r"\}", js)
+    body = m.group(1)
+    assert "disabled = true" in body and "disabled = false" in body
+
+
+def test_the_stylesheet_draws_the_capture_button(app):
+    css = app.test_client().get("/static/app.css").get_data(as_text=True)
+    assert "#capture-btn" in css

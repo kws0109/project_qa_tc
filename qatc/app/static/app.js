@@ -591,6 +591,49 @@ function bindAttachments() {
     pane.classList.remove("dropping");
     if (e.dataTransfer) addImageFiles(e.dataTransfer.files);
   });
+  document.getElementById("capture-btn").addEventListener("click", captureShot);
+}
+
+// 게임 창을 찍어 붙인다. **캡처 전용 업로드 경로를 만들지 않는다** - 받은
+// 이미지를 붙여넣기와 똑같이 `addImageFiles` 에 넣어, 4장/8MB 검증과 썸네일과
+// `x` 제거를 그대로 쓴다. 두 경로가 생기면 한쪽에만 검증이 붙는다.
+//
+// 찍은 것도 곧바로 전송되지 않는다 - 첨부 스트립을 거치므로 사용자가 보고 뺄
+// 수 있다. 화면에 있는 것이 그대로 넘어가는 기능이라 고를 기회가 있어야 한다.
+async function captureShot() {
+  const game = state.selectedGame;
+  if (!game) {
+    appendErrorMessage("먼저 왼쪽 트리에서 컨텐츠를 고르세요 - 어느 게임의 창을 찍을지 알아야 합니다.");
+    return;
+  }
+  const btn = document.getElementById("capture-btn");
+  btn.disabled = true;
+  try {
+    const resp = await fetch("/api/capture", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ game }),
+    });
+    let body = null;
+    try {
+      body = await resp.json();
+    } catch (err) {
+      body = null;
+    }
+    if (!resp.ok) {
+      appendErrorMessage(
+        body && body.error ? body.error : `촬영에 실패했습니다 (${resp.status}).`);
+      return;
+    }
+    const raw = atob(body.data);
+    const buf = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+    await addImageFiles([new File([buf], "capture.png", { type: body.media_type })]);
+  } catch (err) {
+    appendErrorMessage("서버와 통신하지 못했습니다. 다시 시도하세요.");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // 말풍선에 썸네일을 남긴다 — 나중에 "이 슬롯 근거가 뭐였지" 를 되짚을 때,
