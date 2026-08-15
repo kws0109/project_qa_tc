@@ -450,21 +450,20 @@ def test_no_content_chosen_yet_follows_the_same_create_then_resume_path(cfg, tmp
 def _unknown_session_error_line(session_id: str) -> str:
     return json.dumps({
         "type": "result", "subtype": "error_during_execution", "is_error": True,
-        "total_cost_usd": 0,
+        "num_turns": 0, "total_cost_usd": 0,
         "errors": [f"No conversation found with session ID: {session_id}"],
     }, ensure_ascii=False)
 
 
-def _fake_claude_session_aware(tmp_path, *, ok_lines, unknown_session_id, resume_record, create_record):
-    """`--resume` 이면 "그런 세션 없음" 정상 JSON 오류 프레임을 내고,
-    `--session-id` 면 성공(`ok_lines`)한다.
+def _fake_claude_session_aware(tmp_path, *, ok_lines, error_line, resume_record, create_record):
+    """`--resume` 이면 주어진 오류 프레임을 내고, `--session-id` 면 성공(`ok_lines`)한다.
 
     어느 쪽으로 불렸는지에 따라 argv 를 다른 파일에 기록해, 복구가 실제로
     새 세션으로(즉 `--session-id` 로) 재시도했는지 구분해서 검사할 수 있게
-    한다.
+    한다. `error_line` 을 파라미터로 받아, 실측 문구가 있는 프레임뿐 아니라
+    문구가 다른(구조적 특징만 같은) 프레임도 같은 헬퍼로 검사할 수 있다.
     """
     script = tmp_path / "fake_claude_session_aware.py"
-    error_line = _unknown_session_error_line(unknown_session_id)
     script.write_text(textwrap.dedent(f"""
         import json
         import os
@@ -503,7 +502,7 @@ def test_unknown_resume_target_recovers_with_a_fresh_session(cfg, tmp_path):
     resume_record = tmp_path / "resume_record.json"
     create_record = tmp_path / "create_record.json"
     claude_cmd = _fake_claude_session_aware(
-        tmp_path, ok_lines=OK_LINES, unknown_session_id=stale_id,
+        tmp_path, ok_lines=OK_LINES, error_line=_unknown_session_error_line(stale_id),
         resume_record=resume_record, create_record=create_record)
 
     evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
@@ -521,6 +520,193 @@ def test_unknown_resume_target_recovers_with_a_fresh_session(cfg, tmp_path):
 
     # 다음 턴은 이 새 id 를 재개해야 한다 — 낡은 id 로 되돌아가면 다시 막힌다.
     assert session_id_for(cfg, "파티편성") == new_id
+
+
+# --- 3차 재검토: 분류는 문구가 아니라 프레임에 — 그리고 못 박힌 곳 4군데 --
+#
+# 매 턴 실측 문구(영어 원문)를 렌더링된 한국어 메시지 문자열 안에서 다시
+# 찾는 방식이었을 때, 그 문구가 바뀌거나(claude 쪽 업데이트) 메시지가
+# 잘리면(stderr 꼬리 자르기) 복구가 조용히 멈춘다 — 아무 것도 실패하지
+# 않으면서 그 컨텐츠는 영원히 낡은 id 로 --resume 을 시도한다. 이제
+# `_result_events` 가 프레임을 파싱하는 자리에서 `data["kind"] =
+# "unknown_session"` 이라는 코드로 분류를 끝내고, 그 코드가 안 맞을
+# 때(문구 드리프트)를 대비한 구조적 폴백(턴 진행 0·비용 0·401 아님)도
+# 같이 둔다.
+
+
+def test_structural_fallback_recovers_even_when_the_wording_has_drifted(cfg, tmp_path):
+    """실측 문구가 바뀌어도, 구조적 특징(턴 진행 0·비용 0·401 아님)만으로 복구해야 한다.
+
+    문구 하나에만 기대면 그 문구가 바뀌는 날 복구가 통째로 멈추고, 매 턴이
+    이미 죽은 id 로 `--resume` 을 계속 시도해 컨텐츠가 영영 막힌다. 폴백이
+    있으면 최악의 경우가 "비용 0인 턴을 하나 헛되이 더 시도한다" 로 끝난다.
+    """
+    list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=tmp_path / "record0.json")))
+    stale_id = session_id_for(cfg, "파티편성")
+
+    drifted_line = json.dumps({
+        "type": "result", "subtype": "error_during_execution", "is_error": True,
+        "num_turns": 0, "total_cost_usd": 0,
+        "errors": ["완전히 다른 문구로 바뀐 미래의 claude 오류 메시지"],
+    }, ensure_ascii=False)
+
+    resume_record = tmp_path / "resume_record.json"
+    create_record = tmp_path / "create_record.json"
+    claude_cmd = _fake_claude_session_aware(
+        tmp_path, ok_lines=OK_LINES, error_line=drifted_line,
+        resume_record=resume_record, create_record=create_record)
+
+    evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
+    assert [e.kind for e in evs] == ["delta", "tool", "done"]
+
+    create_argv = json.loads(create_record.read_text(encoding="utf-8"))["argv"]
+    new_id = create_argv[create_argv.index("--session-id") + 1]
+    assert new_id != stale_id
+    assert session_id_for(cfg, "파티편성") == new_id
+
+
+DONE_ONLY_LINES = [
+    json.dumps({"type": "result", "subtype": "success", "is_error": False}, ensure_ascii=False),
+]
+
+
+def test_retry_success_with_no_assistant_text_still_persists_the_new_session(cfg, tmp_path):
+    """재시도가 델타/도구 없이 곧바로 `done` 으로 끝나도 새 id 를 저장해야 한다.
+
+    저장 안 하면 다음 턴이 여전히 낡은 id 로 `--resume` 을 시도해 복구가
+    매번 다시 발동하고, 매 턴 자식 프로세스를 두 번씩 태우면서 방금 막
+    만든 세션을 고아로 만든다(재검토 지적: `("delta","tool")` 로만 좁히면
+    이 경로가 절대 저장되지 않는다).
+    """
+    list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=tmp_path / "record0.json")))
+    stale_id = session_id_for(cfg, "파티편성")
+
+    resume_record = tmp_path / "resume_record.json"
+    create_record = tmp_path / "create_record.json"
+    claude_cmd = _fake_claude_session_aware(
+        tmp_path, ok_lines=DONE_ONLY_LINES, error_line=_unknown_session_error_line(stale_id),
+        resume_record=resume_record, create_record=create_record)
+
+    evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
+    assert [e.kind for e in evs] == ["done"]
+
+    create_argv = json.loads(create_record.read_text(encoding="utf-8"))["argv"]
+    new_id = create_argv[create_argv.index("--session-id") + 1]
+    assert session_id_for(cfg, "파티편성") == new_id
+
+
+TOOL_ONLY_THEN_DONE_LINES = [
+    json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Skill",
+         "input": {"skill": "interview", "args": "파티편성"}}]}}, ensure_ascii=False),
+    json.dumps({"type": "result", "subtype": "success", "is_error": False}, ensure_ascii=False),
+]
+
+
+def test_retry_persists_the_new_session_even_when_it_opens_with_a_tool_call(cfg, tmp_path):
+    """재시도의 첫 이벤트가 델타가 아니라 도구 호출이어도 새 id 를 저장해야 한다.
+
+    실제 라이브 증명에서 정확히 이 모양이 나왔다 — 복구된 턴이 델타 없이
+    `Skill` 도구 호출로 시작했다. 저장 조건을 `("delta",)` 로만 좁히면
+    이 경로(재검토 지적: `tool` 갈래가 테스트된 적이 없다)가 저장을
+    건너뛴다.
+    """
+    list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=tmp_path / "record0.json")))
+    stale_id = session_id_for(cfg, "파티편성")
+
+    resume_record = tmp_path / "resume_record.json"
+    create_record = tmp_path / "create_record.json"
+    claude_cmd = _fake_claude_session_aware(
+        tmp_path, ok_lines=TOOL_ONLY_THEN_DONE_LINES,
+        error_line=_unknown_session_error_line(stale_id),
+        resume_record=resume_record, create_record=create_record)
+
+    evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
+    assert [e.kind for e in evs] == ["tool", "done"]
+
+    create_argv = json.loads(create_record.read_text(encoding="utf-8"))["argv"]
+    new_id = create_argv[create_argv.index("--session-id") + 1]
+    assert session_id_for(cfg, "파티편성") == new_id
+
+
+def test_first_turn_never_recovers_even_if_the_frame_looks_like_unknown_session(cfg, tmp_path):
+    """생성 턴(첫 턴)은 재개가 아니므로, 프레임이 "세션 없음" 모양이어도 재시도하면 안 된다.
+
+    `_result_events`/`_looks_like_unknown_session` 자체는 `resume` 여부를
+    모른다(프레임만 본다) — "재개 턴에서만" 이라는 제약은 `stream_turn` 의
+    `ref.resume` 조건이 혼자 지킨다. 그 조건을 빼면 생성 턴의 어떤 오류든
+    "혹시 세션 문제인가" 로 오분류돼 원인과 무관하게 재시도로 새고, 실제
+    턴 하나를 헛되이 더 태운다.
+
+    재시도가 일어나면 원래 시도와 같은 모양(같은 오류)의 자식 프로세스가
+    한 번 더 뜬다 — argv 파일은 두 시도가 같은 경로(생성 모드)로 겹쳐서
+    덮어써지므로 구분이 안 된다. 그래서 호출 횟수 자체를 로그 파일에
+    남겨 직접 센다.
+    """
+    call_log = tmp_path / "calls.log"
+    error_line = _unknown_session_error_line("아무-id")
+    script = tmp_path / "fake_claude_counts_calls.py"
+    script.write_text(textwrap.dedent(f"""
+        import sys
+        with open({str(call_log)!r}, "a", encoding="utf-8") as f:
+            f.write("call\\n")
+        sys.stdout.write({error_line!r} + "\\n")
+        sys.stdout.flush()
+        sys.exit(0)
+    """), encoding="utf-8")
+    claude_cmd = [sys.executable, str(script)]
+
+    evs = list(stream_turn(cfg, "x", "파티편성", claude=claude_cmd))
+
+    assert [e.kind for e in evs] == ["error"]
+    assert call_log.read_text(encoding="utf-8").count("call") == 1
+
+
+MULTI_ERROR_LINES = [
+    json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                "total_cost_usd": 0,
+                "errors": ["첫 번째 진짜 원인", "두 번째 무관한 꼬리 메모"]},
+               ensure_ascii=False),
+]
+
+
+def test_first_error_text_picks_the_first_element_not_the_last(cfg, tmp_path):
+    """`errors` 배열이 여러 개면 **첫** 원소를 써야 한다 — 마지막이 아니다.
+
+    지금까지 쓴 가짜는 전부 원소 하나짜리 배열이라 `[0]` 과 `[-1]` 이
+    우연히 같은 값을 냈다(재검토 지적) — 이 테스트만 둘을 갈라놓는다.
+    """
+    evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(
+        tmp_path, MULTI_ERROR_LINES)))
+    errs = [e for e in evs if e.kind == "error"]
+    assert len(errs) == 1
+    assert "첫 번째 진짜 원인" in errs[0].data["message"]
+    assert "두 번째 무관한 꼬리 메모" not in errs[0].data["message"]
+
+
+def test_stderr_is_not_closed_until_the_drain_thread_has_finished(cfg, tmp_path, monkeypatch):
+    """`proc.stderr` 는 드레인 스레드가 다 읽은 **뒤에만** 닫혀야 한다.
+
+    `_drain_stderr` 를, 끝나기 직전에 `proc.stderr.closed` 를 확인하고 잠깐
+    쉬었다 끝나는 가짜로 바꿔 끼운다. 순서가 맞으면(join 뒤에 닫으면) 메인
+    스레드는 이 가짜가 끝날 때까지 `join()` 에서 블로킹돼 있으므로, 가짜가
+    확인하는 시점엔 항상 아직 안 닫혀 있어야 한다. 순서가 뒤바뀌면(닫고
+    나서 join) 메인 스레드가 먼저 닫아 버릴 수 있다.
+    """
+    closed_before_finish = []
+
+    def spy_drain_stderr(proc, sink):
+        time.sleep(0.1)
+        closed_before_finish.append(proc.stderr.closed if proc.stderr else None)
+
+    monkeypatch.setattr(chat_module, "_drain_stderr", spy_drain_stderr)
+
+    list(stream_turn(cfg, "x", None, claude=_fake_claude(
+        tmp_path, [], stderr_text="some stderr", exit_code=1)))
+    assert closed_before_finish == [False]
 
 
 def _fake_claude_always_unknown_session(tmp_path, mentioned_id):

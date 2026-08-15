@@ -36,8 +36,11 @@ _AUTH_ERROR_MSG = (
 
 # 실측(재검토, 진짜 claude 로 확인): 알 수 없는 --resume 대상은 프레임 없이
 # 죽지 않는다 — 정상적인 JSON `result` 프레임으로 "errors": ["No conversation
-# found with session ID: ..."] 를 담아 온다. `stream_turn` 의 복구 판단은
-# 프레임 유무가 아니라 이 문자열이 오류 메시지 안에 있는지로 좁게 건다.
+# found with session ID: ..."] 를 담아 온다. `_result_events` 가 이 문자열을
+# (그리고 문구가 바뀔 경우의 구조적 폴백을) 이 프레임을 파싱하는 자리에서
+# 바로 판정해 `ChatEvent.data["kind"] = "unknown_session"` 이라는 코드로
+# 내보낸다 — `stream_turn` 은 그 코드만 보고, 렌더링된 메시지 문자열을
+# 다시 뒤지지 않는다(`_looks_like_unknown_session` 참고).
 _UNKNOWN_SESSION_MARKER = "No conversation found with session ID"
 
 
@@ -155,16 +158,6 @@ def _save_sessions(path: Path, sessions: dict) -> None:
 # --- 턴 스트리밍 --------------------------------------------------------------
 
 
-def _looks_like_unknown_resume_target(message: str) -> bool:
-    """이 오류 메시지가 "그런 세션 없음" 신호를 담고 있는지 좁게 확인한다.
-
-    이 문자열이 있을 때만 복구(새 세션으로 재시도)를 건다 — 401 같은 다른
-    정상 오류까지 재시도로 끌고 가면 원인과 무관하게 실제 턴을 한 번 더
-    태워 비용이 두 배가 된다.
-    """
-    return _UNKNOWN_SESSION_MARKER in message
-
-
 def stream_turn(
     cfg: AppConfig,
     message: str,
@@ -182,16 +175,27 @@ def stream_turn(
     상태를 지웠거나 세션이 오래돼 사라졌을 수 있다. 알 수 없는 `--resume`
     대상은 프레임 없이 죽지 않는다 — **정상적인 JSON `result` 프레임**으로
     `errors: ["No conversation found with session ID: ..."]` 를 담아 온다
-    (실측: 재검토, 진짜 `claude` 로 확인). 그래서 프레임 유무가 아니라 그
-    문자열이 오류 메시지 안에 있는지로 좁게 판단한다
-    (`_looks_like_unknown_resume_target`). 이미 델타/도구 호출이 나온
-    뒤라면(재개 자체는 성공했다는 뜻이므로) 다시 시도하지 않는다 — 이미
-    보여준 내용과 겹치는 새 응답을 만드는 게 더 헷갈린다.
+    (실측: 재검토, 진짜 `claude` 로 확인). 재검토 2차: 그 판단을 렌더링된
+    한국어 메시지 문자열 안에서 영어 원문을 다시 찾는 방식으로 하면
+    안 된다 — 문구가 바뀌거나(claude 쪽 업데이트) 메시지를 줄이면(예: stderr
+    꼬리 자르기) 조용히 깨진다. 그래서 분류는 `_result_events` 가 JSON
+    프레임을 파싱하는 그 자리에서 끝내고(`_looks_like_unknown_session`),
+    여기서는 `data["kind"] == "unknown_session"` 이라는 **코드** 만 본다.
+    `ref.resume` 도 이 조건에 직접 건다 — 생성 턴엔 "재개 대상이 없다" 는
+    개념 자체가 없으므로, 재검토를 안 받은 프레임이 우연히 이 모양이어도
+    복구로 잘못 흘러가지 않는다. 이미 델타/도구 호출이 나온 뒤라면(재개
+    자체는 성공했다는 뜻이므로) 다시 시도하지 않는다 — 이미 보여준 내용과
+    겹치는 새 응답을 만드는 게 더 헷갈린다.
 
-    재시도로 만든 새 세션 id 는 그 재시도가 실제 응답(델타 또는 도구 호출)을
-    낼 때만 `sessions.json` 에 적는다 — 재시도조차 곧바로 실패하면 아무것도
-    쓰지 않는다. 미리 써 두면, 실패가 연속될 때마다 uuid 를 하나씩 버리게
-    되고 그 사이 원래 살아있었을 수도 있는 id 의 기록까지 지워진다.
+    재시도로 만든 새 세션 id 는 그 재시도가 실제 결과(델타·도구 호출·또는
+    오류 없는 `done`)를 낼 때만 `sessions.json` 에 적는다 — 재시도조차
+    곧바로 실패하면 아무것도 쓰지 않는다. 미리 써 두면, 실패가 연속될
+    때마다 uuid 를 하나씩 버리게 되고 그 사이 원래 살아있었을 수도 있는
+    id 의 기록까지 지워진다. `done` 을 빼면(델타/도구만 보면) 어시스턴트
+    텍스트 없이 곧장 성공하는 재시도(재검토가 지적: `is_error: false` 인데
+    델타·도구가 하나도 없는 결과)가 저장을 건너뛰어, 다음 턴이 여전히 낡은
+    id 를 재개하려다 또 실패하고 — 매 턴 자식 프로세스를 두 번씩 태우며
+    방금 막 만든 세션을 고아로 만든다.
     """
     ref = session_ref_for(cfg, content)
     if not ref.resume:
@@ -203,7 +207,7 @@ def stream_turn(
         if ev.kind in ("delta", "tool"):
             emitted_real = True
         if (ref.resume and not emitted_real and ev.kind == "error"
-                and _looks_like_unknown_resume_target(ev.data.get("message", ""))):
+                and ev.data.get("kind") == "unknown_session"):
             # 이 이벤트는 그 시도의 마지막 이벤트다(도달하면 `_attempt_turn`
             # 이 곧바로 `settled=True` 로 끝난다) — 사용자에게 곧바로 내지
             # 않고 들고 있다가 아래에서 복구할지 정한다. 여기서 `return` 으로
@@ -226,7 +230,7 @@ def stream_turn(
     new_id = str(uuid.uuid4())
     retry_persisted = False
     for retry_ev in _attempt_turn(cfg, message, new_id, False, claude):
-        if not retry_persisted and retry_ev.kind in ("delta", "tool"):
+        if not retry_persisted and retry_ev.kind in ("delta", "tool", "done"):
             _mark_session_created(cfg, content, new_id)
             retry_persisted = True
         yield retry_ev
@@ -321,11 +325,16 @@ def _attempt_turn(
     finally:
         _close(proc)
         stderr_thread.join(timeout=5)
-        # `_drain_stderr` 가 이 시점까지 `proc.stderr` 를 계속 읽고 있었으므로
-        # (join 전에 닫으면 그 스레드가 다 읽지 못한 stderr 을 잃는다), 다
-        # 읽고 난 지금 닫는다 — 안 닫아 두면 이 파일 객체가 나중에 GC 로
-        # 정리될 때 "Exception ignored while finalizing file" 로 새어나간다
-        # (실측: 재검토, 소비자가 스트림을 일찍 끊는 시나리오에서 재현됨).
+        # 여기서 닫는 이유가 "안 그러면 파이프 쓰기 쪽이 아직 열려 있어서"
+        # 는 아니다(재검토가 지적: 그 설명은 실제 위험을 과장한다) — 바로
+        # 위 `_close(proc)` 가 이미 `proc.wait()` 로 자식을 회수했으므로,
+        # 이 시점엔 파이프 쓰기 쪽도 이미 죽어 있고 `_drain_stderr` 는 EOF
+        # 를 만나 스스로 끝나는 중이다(그래서 `join` 이 금방 끝난다). `join`
+        # **뒤에** 닫는 진짜 이유는, 그 스레드가 아직 같은 파일 객체를
+        # 읽고 있는 동안 메인 스레드가 끼어들어 닫지 않기 위해서다 — 안
+        # 닫아 두면(어느 순서든) 이 파일 객체가 나중에 GC 로 정리될 때
+        # "Exception ignored while finalizing file" 로 새어나간다(실측:
+        # 재검토, 소비자가 스트림을 일찍 끊는 시나리오에서 재현됨).
         try:
             if proc.stderr:
                 proc.stderr.close()
@@ -485,8 +494,50 @@ def _result_events(obj: dict) -> Iterator[ChatEvent]:
     # 안 된다 (재인증 안내는 원인이 다를 때 사용자를 엉뚱한 길로 보낸다).
     if obj.get("api_error_status") == 401:
         yield ChatEvent("error", {"kind": "auth", "message": _AUTH_ERROR_MSG})
-    else:
-        yield ChatEvent("error", {"kind": "error", "message": _generic_error_msg(obj)})
+        return
+    # 재검토: "세션 없음" 분류는 이 JSON 프레임을 파싱하는 바로 이 자리에서
+    # 끝낸다 — `data["kind"]` 라는 코드로 내보내고, 소비자(`stream_turn`)는
+    # 그 코드만 본다. 예전엔 렌더링된 한국어 메시지 문자열 안에서 영어
+    # 원문을 다시 부분 문자열로 찾았는데, 그러면 렌더링 문구가 바뀌거나
+    # stderr 꼬리를 자르기만 해도 판정이 조용히 깨진다(실측: 재검토가
+    # 메시지 꼬리를 짧게 줄이는 것만으로 그 경로의 복구를 깼다). `resume`
+    # 턴인지는 이 함수가 모른다 — 그 제약은 호출자가 건다(아래 `_looks_
+    # like_unknown_session` 의 docstring 참고).
+    if _looks_like_unknown_session(obj):
+        yield ChatEvent("error", {
+            "kind": "unknown_session",
+            "message": _generic_error_msg(obj),
+        })
+        return
+    yield ChatEvent("error", {"kind": "error", "message": _generic_error_msg(obj)})
+
+
+def _looks_like_unknown_session(obj: dict) -> bool:
+    """이 `result` 오류 프레임이 "그런 세션 없음" 인지 판정한다.
+
+    이 판정 자체는 `resume` 여부를 모른다 — "재개 턴에서만 복구를 건다"
+    는 제약은 `stream_turn` 이 별도로 지킨다(`ref.resume` 을 그 조건에
+    직접 넣는다). 여기서까지 `resume` 으로 걸러 버리면, "그 가드를 빼도
+    되는지" 를 이 함수만으로는 검사할 수 없어진다 — 가드가 두 곳에 나뉘어
+    있어야 각각 독립적으로 뮤테이션 검증이 가능하다.
+
+    1차: `errors` 배열 안에서 실측 문구를 직접 찾는다.
+
+    2차(문구가 바뀌어도 대비): claude 가 모델을 한 번도 부르지 않고 인자
+    단계에서 곧바로 거부한 것처럼 보이는 구조적 특징 — 턴 진행 0, 비용 0,
+    401 이 아님 — 이면 "혹시" 세션 문제로 보고 새 세션으로 한 번 더
+    시도한다. 문구가 아예 안 맞아도 이 폴백 덕분에 최악의 경우가 "비용
+    0인 턴을 하나 헛되이 더 시도한다" 로 끝난다 — 문구 하나 어긋났다고
+    컨텐츠가 영영 막히는 것보다 훨씬 낫다.
+    """
+    errors = obj.get("errors")
+    if isinstance(errors, list) and any(_UNKNOWN_SESSION_MARKER in str(e) for e in errors):
+        return True
+    return (
+        obj.get("num_turns") == 0
+        and obj.get("total_cost_usd") == 0
+        and obj.get("api_error_status") is None
+    )
 
 
 def _generic_error_msg(obj: dict) -> str:
