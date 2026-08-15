@@ -1129,3 +1129,48 @@ def test_a_real_failure_is_not_labelled_as_a_missing_session(cfg, tmp_path):
     evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(tmp_path, lines)))
     assert [e.kind for e in evs] == ["error"]
     assert evs[0].data["kind"] == "error"
+
+
+# --- 사용자가 친 문장이 정말 자식에게 닿는가 (최종 리뷰 M1) -----------------
+
+
+def _fake_claude_recording_stdin(tmp_path, stdin_record):
+    """표준입력으로 받은 것을 그대로 파일에 남기는 가짜.
+
+    다른 가짜들은 stdin 을 읽지 않는다 — 그래서 `_send_message` 가 무엇을
+    보내든(심지어 빈 문자열이든) 스위트가 초록이었다. 이 앱의 가장 밑바닥
+    계약항이 바로 그것인데도.
+    """
+    script = tmp_path / "fake_claude_stdin.py"
+    script.write_text(textwrap.dedent(f"""
+        import json
+        import sys
+
+        raw = sys.stdin.read()
+        with open({str(stdin_record)!r}, "w", encoding="utf-8") as f:
+            f.write(raw)
+
+        sys.stdout.write(json.dumps(
+            {{"type": "result", "subtype": "success", "is_error": False}}) + "\\n")
+        sys.stdout.flush()
+    """), encoding="utf-8")
+    return [sys.executable, str(script)]
+
+
+def test_the_users_sentence_actually_reaches_the_child_process(cfg, tmp_path):
+    """M1(실측): `_send_message` 가 `"text": ""` 를 보내도 494 전부 통과했다.
+
+    가짜 claude 들이 전부 stdin 을 읽지 않아, "사용자가 친 문장이 claude 에
+    도달한다" 는 이 앱의 가장 밑바닥 계약항이 통째로 미관측이었다. 여기서는
+    가짜가 받은 stdin 을 그대로 파일에 남기고, 그 안에 문장이 있는지 본다.
+    """
+    record = tmp_path / "stdin.txt"
+    message = "파티편성은 캐릭터 4명까지 넣을 수 있어"
+    evs = list(stream_turn(cfg, message, None,
+                           claude=_fake_claude_recording_stdin(tmp_path, record)))
+    assert [e.kind for e in evs] == ["done"]
+
+    sent = json.loads(record.read_text(encoding="utf-8").strip())
+    assert sent["type"] == "user"
+    assert sent["message"]["role"] == "user"
+    assert sent["message"]["content"][0]["text"] == message
