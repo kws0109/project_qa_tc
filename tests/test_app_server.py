@@ -654,10 +654,14 @@ def test_the_page_script_still_talks_to_every_endpoint_and_frame_kind(app):
     js = app.test_client().get("/static/app.js").get_data(as_text=True)
     for endpoint in ("/api/tree", "/api/content", "/api/chat", "/api/export", "/api/health"):
         assert endpoint in js, f"화면이 {endpoint} 를 부르지 않습니다"
-    for kind in ('"delta"', '"tool"', '"done"', '"error"', '"notice"'):
+    for kind in ('"delta"', '"tool"', '"done"', '"error"', '"notice"', '"progress"'):
         assert kind in js, f"화면이 {kind} 프레임을 다루지 않습니다"
     assert "msg-notice" in js, "복구 알림을 그리는 자리가 없습니다"
     assert "http://" not in js and "https://" not in js, "화면이 외부 주소를 씁니다"
+    # 진행 표시는 두 겹이라야 한다 — `progress` 프레임만 다루고 자체 타이머가
+    # 없으면, 백엔드가 조용한 구간에서 화면이 그대로 멈춘다(그 구간이 이
+    # 기능이 생긴 이유다).
+    assert "setInterval" in js, "경과 시간을 갱신하는 자체 타이머가 없습니다"
 
 
 # --- `선택 해제` 버튼이 이름 그대로 동작한다 (부차 결함, 병합 전 수정) -------
@@ -722,3 +726,19 @@ def test_the_stylesheet_draws_a_notice_differently_from_a_bubble(app):
     assert notice != assistant
     assert "align-self: center" in notice, "알림이 말풍선처럼 한쪽에 붙습니다"
     assert "var(--text-muted)" in notice, "알림이 본문과 같은 무게로 그려집니다"
+
+
+# --- 진행 표시가 SSE 프레임으로 브라우저까지 간다 ---------------------------
+
+
+def test_progress_reaches_the_browser_as_its_own_frame(app, monkeypatch):
+    from qatc.app import chat as chat_mod
+
+    def fake_stream(cfg, message, content, **kw):
+        yield chat_mod.ChatEvent("progress", {"phase": "준비 중"})
+        yield chat_mod.ChatEvent("done", {"changed": False})
+
+    monkeypatch.setattr("qatc.app.server.stream_turn", fake_stream)
+    text = app.test_client().post("/api/chat", json={"message": "x"}).get_data(as_text=True)
+    assert "event: progress" in text
+    assert "준비 중" in text

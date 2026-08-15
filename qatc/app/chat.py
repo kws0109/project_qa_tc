@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import threading
@@ -60,6 +61,27 @@ _RECOVERY_NOTICE = (
 )
 
 
+#: 자식이 이만큼 조용하면 하트비트 진행 표시를 한 번 낸다 (초).
+#:
+#: 이 값이 진행 표시의 **하한**을 정한다: 백엔드가 아무 말도 못 할 때조차
+#: 화면은 이 주기로 움직인다. 테스트는 이 값을 짧게 몽키패치해 침묵 구간을
+#: 실제로 만들어 본다.
+_HEARTBEAT_SECONDS = 5.0
+
+#: 진행 표시 문구. 화면에 그대로 나가는 한국어이므로 여기 한 곳에서만 정한다.
+_PHASE_STARTING = "claude 를 깨우는 중"
+_PHASE_PREPARING = "준비 중"
+_PHASE_WAITING = "기다리는 중"
+
+#: `_pump_stdout` 이 "더 읽을 것이 없다" 를 알리는 표식. `None` 이나 빈
+#: 문자열을 쓰면 자식이 실제로 보낸 빈 줄과 구별할 수 없다.
+_STDOUT_EOF = object()
+
+
+def _progress(phase: str) -> "ChatEvent":
+    return ChatEvent("progress", {"phase": phase})
+
+
 class ClaudeMissing(Exception):
     """`claude` 실행 파일을 찾지 못했다. 메시지는 완성된 한국어 문장이다."""
 
@@ -68,10 +90,14 @@ class ClaudeMissing(Exception):
 class ChatEvent:
     """`stream_turn` 이 흘려보내는 사건 하나.
 
-    `kind` 는 `delta`(텍스트 조각) / `tool`(도구 호출) / `done`(턴 종료) /
-    `error`(실패) / `notice`(턴은 성공했지만 사용자가 알아야 할 것) 중
-    하나다. `notice` 는 `error` 가 아니다 — 그 턴은 계속 진행되고 `done`
-    으로 끝난다.
+    `kind` 는 `delta`(텍스트 조각) / `tool`(도구 호출) / `progress`(지금
+    무엇을 하는 중인지) / `done`(턴 종료) / `error`(실패) / `notice`(턴은
+    성공했지만 사용자가 알아야 할 것) 중 하나다. `notice` 는 `error` 가
+    아니다 — 그 턴은 계속 진행되고 `done` 으로 끝난다.
+
+    `progress` 도 `error` 가 아니고 `done` 도 아니다 — 아무 것도 확정하지
+    않는 순수한 표시이므로, 소비자는 이 종류로 턴을 끝내거나 패널을 다시
+    읽으면 안 된다.
     """
 
     kind: str
@@ -187,6 +213,12 @@ def stream_turn(
 
     첫 턴은 `--session-id` 로 세션을 만들고, 그 다음 턴부터는 `--resume` 으로
     이어간다(둘 다 같은 id) — `session_ref_for` 참고.
+
+    **진행 표시.** 이 스트림에는 `progress` 이벤트가 섞여 나온다(기동 직후 ·
+    `system` 프레임 · 도구 호출 · 무음 하트비트). 아무 것도 확정하지 않는
+    표시일 뿐이므로 소비자는 그것으로 턴을 끝내거나 패널을 다시 읽으면 안
+    된다. `done` 뒤에는 절대 오지 않는다 — 끝난 턴이 계속 도는 것처럼
+    보이면 그 표시는 거짓말이 된다.
 
     **복구.** `sessions.json` 은 "생성을 시도했다" 만 기억하지, 그 id 를 진짜
     `claude` 가 여전히 알고 있는지는 보장하지 않는다 — 사용자가 `~/.claude`
@@ -317,11 +349,38 @@ def _attempt_turn(
         target=_drain_stderr, args=(proc, stderr_lines), daemon=True)
     stderr_thread.start()
 
+    # stdout 도 별도 스레드로 읽는다. 여기서 `for raw_line in proc.stdout` 로
+    # 직접 읽으면 자식이 조용한 동안 그 줄에서 무한정 막혀 **하트비트를 낼
+    # 수 있는 지점이 아예 없다** — 사용자가 "진행 중인지 멈춘 건지 모르겠다"
+    # 고 한 구간이 정확히 그 블로킹이다. 읽기를 스레드로 옮기면 이 루프는
+    # 시간제한 있는 큐 대기가 되고, 시간이 다 될 때마다 진행 표시를 낼 수
+    # 있다. `proc.stdout` 을 논블로킹으로 바꾸는 방식은 쓰지 않는다 —
+    # Windows 의 파이프에서 신뢰할 수 없다.
+    stdout_lines: queue.Queue = queue.Queue()
+    stdout_thread = threading.Thread(
+        target=_pump_stdout, args=(proc.stdout, stdout_lines), daemon=True)
+    stdout_thread.start()
+
     settled = False
     closing = False
     try:
-        for raw_line in proc.stdout:
-            line = raw_line.strip()
+        # 자식이 뜬 직후. 첫 프레임까지 수 초가 걸리므로 그 전에 화면이 한
+        # 번 움직여야 한다. 이 `yield` 는 반드시 `try` **안**에 있어야 한다 —
+        # 밖에 두면 소비자가 바로 여기서 스트림을 끊었을 때 아래 `finally`
+        # 를 거치지 않아 자식 프로세스가 그대로 남는다.
+        yield _progress(_PHASE_STARTING)
+        while True:
+            try:
+                item = stdout_lines.get(timeout=_HEARTBEAT_SECONDS)
+            except queue.Empty:
+                # 침묵이 이어지는 중. 백엔드가 할 말이 없어도 화면은 움직여야
+                # 한다 — 이것이 "멈춘 게 아니다" 의 유일한 증거다. 몇 번이든
+                # 반복해서 낸다.
+                yield _progress(_PHASE_WAITING)
+                continue
+            if item is _STDOUT_EOF:
+                break
+            line = item.strip()
             if not line:
                 continue
             try:
@@ -349,6 +408,7 @@ def _attempt_turn(
         raise
     finally:
         _close(proc)
+        stdout_thread.join(timeout=5)
         stderr_thread.join(timeout=5)
         # 여기서 닫는 이유가 "안 그러면 파이프 쓰기 쪽이 아직 열려 있어서"
         # 는 아니다(재검토가 지적: 그 설명은 실제 위험을 과장한다) — 바로
@@ -360,11 +420,18 @@ def _attempt_turn(
         # 닫아 두면(어느 순서든) 이 파일 객체가 나중에 GC 로 정리될 때
         # "Exception ignored while finalizing file" 로 새어나간다(실측:
         # 재검토, 소비자가 스트림을 일찍 끊는 시나리오에서 재현됨).
-        try:
-            if proc.stderr:
-                proc.stderr.close()
-        except OSError:
-            pass
+        #
+        # **이제 stdout 도 같은 처지다.** 예전엔 이 함수가 stdout 을 직접
+        # 읽어서 `_close` 가 곧바로 닫아도 아무도 그 파일 객체를 안 보고
+        # 있었지만, 지금은 `_pump_stdout` 스레드가 읽는다 — 그래서 stdout
+        # 닫기도 `_close` 에서 여기로 옮겨, 두 파이프 모두 자기 스레드를
+        # 거둔 뒤에만 닫는다.
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                if stream:
+                    stream.close()
+            except OSError:
+                pass
         if not settled and not closing:
             # done 도 error 도 없이 스트림이 끝났다 — 성공처럼 보이며 조용히
             # 멈추는 것이 이 프로젝트가 반복해서 당해 온 실패 모양이므로,
@@ -462,17 +529,36 @@ def _close(proc: subprocess.Popen) -> None:
     12초가 지나도 안 끝났고 자식은 그때까지 살아 있었다) 이 스레드가
     영원히 막히고 `claude` 프로세스가 좀비로 남는다. 일정 시간 기다려도 안
     끝나면 강제로 죽인다.
+
+    **파이프는 여기서 닫지 않는다.** 지금은 stdout·stderr 를 각각 별도
+    스레드가 읽으므로, 그 스레드가 아직 읽고 있는 파일 객체를 이 함수가
+    닫으면 그 스레드 안에서 터진다. 닫기는 호출자(`_attempt_turn` 의
+    `finally`)가 두 스레드를 `join` 한 뒤에 한다. 자식을 회수(또는 강제
+    종료)하면 두 파이프 모두 EOF 가 되어 스레드들이 스스로 끝나므로, 이
+    함수가 파이프를 닫아 줘야 그 스레드들이 풀리는 것도 아니다.
     """
-    try:
-        if proc.stdout:
-            proc.stdout.close()
-    except OSError:
-        pass
     try:
         proc.wait(timeout=_CLOSE_WAIT_TIMEOUT)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+
+
+def _pump_stdout(stream, sink: queue.Queue) -> None:
+    """`proc.stdout` 을 끝까지 읽어 큐로 넘긴다. 별도 스레드에서 돈다.
+
+    마지막에 반드시 `_STDOUT_EOF` 를 하나 넣는다 — 그 표식이 없으면 자식이
+    끝난 뒤에도 소비 루프가 "그냥 조용한 것" 과 구별하지 못해 하트비트만
+    영원히 내보낸다.
+    """
+    try:
+        if stream is not None:
+            for raw_line in stream:
+                sink.put(raw_line)
+    except (OSError, ValueError):
+        pass
+    finally:
+        sink.put(_STDOUT_EOF)
 
 
 def _drain_stderr(proc: subprocess.Popen, sink: list[str]) -> None:
@@ -512,6 +598,13 @@ def _events_from(obj: dict) -> Iterator[ChatEvent]:
         yield from _assistant_events(obj)
     elif obj_type == "result":
         yield from _result_events(obj)
+    elif obj_type == "system":
+        # 실측: 진짜 스트림은 `assistant` 가 아니라 `system` 프레임
+        # (`hook_started`·`init` 등) 으로 시작한다. 예전엔 "모르는 type" 이라
+        # 그냥 버렸는데, 그 프레임이야말로 **자식이 살아 있다는 가장 이른
+        # 증거**다 — 버리면 그 구간이 통째로 침묵이 된다. 내용을 해석할
+        # 필요는 없다. 도착했다는 사실만으로 충분하다.
+        yield _progress(_PHASE_PREPARING)
 
 
 def _assistant_events(obj: dict) -> Iterator[ChatEvent]:
@@ -522,8 +615,13 @@ def _assistant_events(obj: dict) -> Iterator[ChatEvent]:
             if text:
                 yield ChatEvent("delta", {"text": text})
         elif item_type == "tool_use":
+            name = item.get("name", "")
+            # 이름을 그대로 싣는다. 고정 문구("도구 실행 중")로 뭉개면, 오래
+            # 걸리는 턴에서 사용자가 **무엇 때문에** 기다리는지 알 수 없다 —
+            # 진행 표시가 있으나 마나가 되는 지점이 정확히 거기다.
+            yield _progress(f"{name} 실행 중" if name else "도구 실행 중")
             yield ChatEvent("tool", {
-                "name": item.get("name", ""),
+                "name": name,
                 "summary": _tool_summary(item.get("input", {})),
             })
 

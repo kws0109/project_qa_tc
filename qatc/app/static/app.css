@@ -271,6 +271,56 @@ button, textarea, input {
   text-align: center;
 }
 
+/* 진행 표시 — "멈춘 게 아니다" 를 말하는 줄.
+
+   말풍선(모델이 한 말)도 알림(앱이 하는 말)도 아니다. 대화의 **내용**이
+   아니라 **상태**이므로 옅게, 한 줄로, 왼쪽에 붙여 그린다.
+
+   점 세 개는 백엔드가 한마디도 안 해도 움직인다 — 애니메이션 자체가
+   "살아 있다" 의 두 번째 증거다. 다만 움직임에 민감한 사용자에게는 멈춘다
+   (`prefers-reduced-motion`). 그때도 경과 초는 계속 올라가므로 정보가
+   사라지지는 않는다 — 그것이 애니메이션과 숫자를 둘 다 두는 이유다. */
+.progress {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.progress-dots { display: inline-flex; gap: 4px; }
+
+.progress-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: progress-pulse 1.2s ease-in-out infinite;
+}
+
+.progress-dots i:nth-child(2) { animation-delay: 0.15s; }
+.progress-dots i:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes progress-pulse {
+  0%, 80%, 100% { opacity: 0.25; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1); }
+}
+
+.progress-phase { font-weight: 500; }
+
+/* 숫자 폭을 고정한다 — 1초마다 바뀌는 값이 글자 폭 때문에 옆 글자를
+   흔들면 그 자체가 읽기 방해다. */
+.progress-elapsed {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-dots i { animation: none; opacity: 0.6; }
+}
+
 .tool-call {
   font-family: var(--mono);
   font-size: 0.8rem;

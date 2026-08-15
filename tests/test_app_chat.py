@@ -29,12 +29,18 @@ def _fake_claude(tmp_path, lines, *, record_to=None, stderr_text=None, exit_code
     (cwd·세션 id·플래그)을 검사하려면 그 인자를 어딘가 남겨야 테스트가 읽을
     수 있다. `stderr_text` 를 주면 표준오류에 그 문자열을 쓰고 `exit_code`
     로 끝난다 — 비정상 종료 시 stderr 가 진단으로 전달되는지 확인하는 데 쓴다.
+
+    `lines` 의 원소가 `__SLEEP__<초>` 면 그 줄은 출력하지 않고 그만큼 잠든다.
+    **침묵 구간을 흉내내는 유일한 방법이다** — 지금까지의 가짜는 전부 즉시 다
+    쓰고 곧바로 끝나서, 사용자가 "진행 중인지 멈춘 건지 모르겠다" 고 한 그
+    구간이 스위트에 한 번도 존재한 적이 없었다.
     """
     script = tmp_path / "fake_claude.py"
     script.write_text(textwrap.dedent(f"""
         import json
         import os
         import sys
+        import time
 
         record_to = {(str(record_to) if record_to else None)!r}
         if record_to:
@@ -42,6 +48,9 @@ def _fake_claude(tmp_path, lines, *, record_to=None, stderr_text=None, exit_code
                 json.dump({{"argv": sys.argv, "cwd": os.getcwd()}}, f, ensure_ascii=False)
 
         for line in {lines!r}:
+            if line.startswith("__SLEEP__"):
+                time.sleep(float(line[len("__SLEEP__"):]))
+                continue
             sys.stdout.write(line + "\\n")
             sys.stdout.flush()
 
@@ -70,6 +79,36 @@ def _distinctive_skill_line() -> str:
         if line.startswith("# "):
             return line
     raise AssertionError("SKILL.md 에 최상위 제목이 없습니다")
+
+
+def _kinds(evs):
+    """진행 표시(`progress`)를 뺀 사건 종류 목록.
+
+    진행 표시는 어느 턴에나 섞여 들어온다 — 기동 직후 · `system` 프레임 ·
+    도구 호출 · 무음 하트비트. 그대로 두면 이 파일의 순서 단언이 전부 진행
+    표시의 **개수**에 종속돼, 정작 검사하려는 것(복구·오류·완료의 순서)과
+    아무 상관 없는 이유로 깨진다. 하트비트는 기계 속도에 따라 개수가 달라
+    지기까지 한다. 진행 표시 자체는 전용 테스트들이 따로 본다.
+    """
+    return [e.kind for e in evs if e.kind != "progress"]
+
+
+def _content_events(evs):
+    """진행 표시를 뺀 사건 목록. 종류뿐 아니라 `data` 까지 볼 때 쓴다."""
+    return [e for e in evs if e.kind != "progress"]
+
+
+def _next_content_event(gen):
+    """진행 표시를 건너뛰고 다음 실제 사건 하나를 꺼낸다.
+
+    `next(gen)` 을 그대로 쓰면 기동 진행 표시가 잡혀, "델타를 하나 받은 뒤
+    끊는다" 는 시나리오가 실제로는 "아무것도 못 받고 끊는다" 가 된다.
+    제너레이터는 그 자리에 멈춰 있으므로 이어서 `close()` 할 수 있다.
+    """
+    for ev in gen:
+        if ev.kind != "progress":
+            return ev
+    raise AssertionError("진행 표시 말고는 아무 사건도 오지 않았습니다")
 
 
 OK_LINES = [
@@ -314,10 +353,12 @@ def test_verbose_flag_accompanies_stream_json_output(cfg, tmp_path):
 #
 # 라이브 스모크 테스트로 실측한 진짜 `claude --output-format stream-json
 # --verbose` 출력은 `assistant`/`result` 가 아니라 `system` 타입 프레임
-# (`hook_started` 등) 으로 시작한다. `_events_from` 은 모르는 `type` 은 그냥
-# 건너뛰므로(빈 제너레이터를 돌려주므로) 파싱 루프는 이미 이걸 견딘다 —
-# 이 테스트는 그 관대함이 실제로 성립함을 고정하고, 가짜의 스트림 모양을
-# 실측에 맞춘다.
+# (`hook_started` 등) 으로 시작한다. 예전엔 `_events_from` 이 그것을 모르는
+# `type` 이라 그냥 버렸고, 이 절의 테스트도 "버려도 뒤가 멀쩡하다" 만 고정
+# 했다. 지금은 버리지 않고 `progress` 로 바꿔 내보낸다 — 그 프레임이 곧
+# "자식이 살아 있다" 는 가장 이른 증거이기 때문이다 (그 계약은
+# `test_system_frames_become_progress_not_silence` 가 본다). 여기서 남는
+# 질문은 하나다: **그 프레임들이 뒤이은 대화를 흐트러뜨리지 않는가.**
 
 SYSTEM_OPENING_LINES = [
     json.dumps({"type": "system", "subtype": "hook_started",
@@ -334,15 +375,16 @@ SYSTEM_OPENING_LINES = [
 REALISTIC_OPENING_LINES = SYSTEM_OPENING_LINES + OK_LINES
 
 
-def test_unknown_system_frames_before_the_turn_are_ignored(cfg, tmp_path):
+def test_system_frames_do_not_disturb_the_rest_of_the_turn(cfg, tmp_path):
     """`system`/`hook_started` 류로 시작하는 실제 스트림 모양을 견뎌야 한다.
 
     이 프레임들이 섞여도 뒤이은 delta·tool·done 은 평소와 똑같이 나와야
-    한다 — 말줄임 없이, 순서도 그대로.
+    한다 — 말줄임 없이, 순서도 그대로. 진행 표시로 바꿔 내보내는 것이
+    대화 자체를 건드리면 안 된다.
     """
     evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(
         tmp_path, REALISTIC_OPENING_LINES)))
-    assert [e.kind for e in evs] == ["delta", "tool", "done"]
+    assert _kinds(evs) == ["delta", "tool", "done"]
     assert "".join(e.data["text"] for e in evs if e.kind == "delta") == "안녕"
 
 
@@ -511,7 +553,7 @@ def test_unknown_resume_target_recovers_with_a_fresh_session(cfg, tmp_path):
     # 사용자에게 실패한 재개 시도는 **오류로** 보이지 않는다. 대신 복구가
     # 일어났다는 `notice` 하나가 앞서고, 그 뒤로 재시도의 결과가 정상적인
     # 턴 모양(OK_LINES)으로 도착한다.
-    assert [e.kind for e in evs] == ["notice", "delta", "tool", "done"]
+    assert _kinds(evs) == ["notice", "delta", "tool", "done"]
 
     resume_argv = json.loads(resume_record.read_text(encoding="utf-8"))["argv"]
     assert resume_argv[resume_argv.index("--resume") + 1] == stale_id
@@ -560,7 +602,7 @@ def test_structural_fallback_recovers_even_when_the_wording_has_drifted(cfg, tmp
         resume_record=resume_record, create_record=create_record)
 
     evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
-    assert [e.kind for e in evs] == ["notice", "delta", "tool", "done"]
+    assert _kinds(evs) == ["notice", "delta", "tool", "done"]
 
     create_argv = json.loads(create_record.read_text(encoding="utf-8"))["argv"]
     new_id = create_argv[create_argv.index("--session-id") + 1]
@@ -592,7 +634,7 @@ def test_retry_success_with_no_assistant_text_still_persists_the_new_session(cfg
         resume_record=resume_record, create_record=create_record)
 
     evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
-    assert [e.kind for e in evs] == ["notice", "done"]
+    assert _kinds(evs) == ["notice", "done"]
 
     create_argv = json.loads(create_record.read_text(encoding="utf-8"))["argv"]
     new_id = create_argv[create_argv.index("--session-id") + 1]
@@ -627,7 +669,7 @@ def test_retry_persists_the_new_session_even_when_it_opens_with_a_tool_call(cfg,
         resume_record=resume_record, create_record=create_record)
 
     evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
-    assert [e.kind for e in evs] == ["notice", "tool", "done"]
+    assert _kinds(evs) == ["notice", "tool", "done"]
 
     create_argv = json.loads(create_record.read_text(encoding="utf-8"))["argv"]
     new_id = create_argv[create_argv.index("--session-id") + 1]
@@ -663,7 +705,7 @@ def test_first_turn_never_recovers_even_if_the_frame_looks_like_unknown_session(
 
     evs = list(stream_turn(cfg, "x", "파티편성", claude=claude_cmd))
 
-    assert [e.kind for e in evs] == ["error"]
+    assert _kinds(evs) == ["error"]
     assert call_log.read_text(encoding="utf-8").count("call") == 1
 
 
@@ -744,7 +786,7 @@ def test_a_second_consecutive_failure_does_not_discard_the_original_session_id(c
 
     # 복구를 **시도했다**는 사실은 알린다(`notice`). 그 재시도까지 실패했으니
     # 그 실패는 `error` 로 이어진다 — 알림이 실패를 덮지 않는다.
-    assert [e.kind for e in evs] == ["notice", "error"]
+    assert _kinds(evs) == ["notice", "error"]
     # sessions.json 은 원래 id 그대로다 — 재시도가 실패한 새 id 로 덮이지
     # 않았다.
     assert session_id_for(cfg, "파티편성") == stale_id
@@ -766,8 +808,8 @@ def test_a_401_on_a_resume_turn_does_not_trigger_recovery(cfg, tmp_path):
     evs = list(stream_turn(cfg, "y", "파티편성", claude=_fake_claude(
         tmp_path, AUTH_LINES, record_to=record)))
 
-    assert [e.kind for e in evs] == ["error"]
-    assert evs[0].data["kind"] == "auth"
+    assert _kinds(evs) == ["error"]
+    assert _content_events(evs)[0].data["kind"] == "auth"
     # 재시도가 없었다 — 기록된 argv 가 여전히 --resume 이다. 재시도였다면
     # 이 같은 경로(record 파일)가 --session-id 로 다시 기록되어 덮였을
     # 것이다.
@@ -801,7 +843,7 @@ def test_emitted_real_content_blocks_recovery_even_with_the_unknown_session_mark
     evs = list(stream_turn(cfg, "y", "파티편성", claude=_fake_claude(
         tmp_path, MID_TURN_UNKNOWN_SESSION_LINES, record_to=record)))
 
-    assert [e.kind for e in evs] == ["delta", "error"]
+    assert _kinds(evs) == ["delta", "error"]
     assert "No conversation found with session ID" in evs[-1].data["message"]
     assert "원인을 알 수 없습니다" not in evs[-1].data["message"]
 
@@ -911,7 +953,7 @@ def test_closing_the_generator_early_does_not_raise_and_kills_the_child(cfg, tmp
         {"type": "text", "text": "hi"}]}}, ensure_ascii=False)]
     gen = chat_module._attempt_turn(
         cfg, "x", "any-session-id", False, _fake_claude_that_lingers(tmp_path, lines))
-    ev = next(gen)
+    ev = _next_content_event(gen)
     assert ev.kind == "delta"
 
     start = time.monotonic()
@@ -938,7 +980,7 @@ def test_stream_turn_can_also_be_closed_early_without_an_unraisable_warning(cfg,
     lines = [json.dumps({"type": "assistant", "message": {"content": [
         {"type": "text", "text": "hi"}]}}, ensure_ascii=False)]
     gen = stream_turn(cfg, "x", None, claude=_fake_claude_that_lingers(tmp_path, lines))
-    ev = next(gen)
+    ev = _next_content_event(gen)
     assert ev.kind == "delta"
     gen.close()
 
@@ -1074,7 +1116,7 @@ def test_the_recovery_notice_is_not_an_error_and_the_turn_still_completes(cfg, t
 
     assert not [e for e in evs if e.kind == "error"]
     assert evs[-1].kind == "done"
-    assert evs[0].kind == "notice"      # 응답보다 먼저 — 뒤늦게 알리면 늦다
+    assert _kinds(evs)[0] == "notice"   # 응답보다 먼저 — 뒤늦게 알리면 늦다
 
 
 def test_a_normal_turn_carries_no_notice(cfg, tmp_path):
@@ -1127,8 +1169,8 @@ def test_a_real_failure_is_not_labelled_as_a_missing_session(cfg, tmp_path):
         "result": "디스크가 가득 찼습니다",
     }, ensure_ascii=False)]
     evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(tmp_path, lines)))
-    assert [e.kind for e in evs] == ["error"]
-    assert evs[0].data["kind"] == "error"
+    assert _kinds(evs) == ["error"]
+    assert _content_events(evs)[0].data["kind"] == "error"
 
 
 # --- 사용자가 친 문장이 정말 자식에게 닿는가 (최종 리뷰 M1) -----------------
@@ -1168,9 +1210,60 @@ def test_the_users_sentence_actually_reaches_the_child_process(cfg, tmp_path):
     message = "파티편성은 캐릭터 4명까지 넣을 수 있어"
     evs = list(stream_turn(cfg, message, None,
                            claude=_fake_claude_recording_stdin(tmp_path, record)))
-    assert [e.kind for e in evs] == ["done"]
+    assert _kinds(evs) == ["done"]
 
     sent = json.loads(record.read_text(encoding="utf-8").strip())
     assert sent["type"] == "user"
     assert sent["message"]["role"] == "user"
     assert sent["message"]["content"][0]["text"] == message
+
+
+# --- 진행 표시 — 조용한 자식이 "멈춘 것" 으로 보이지 않게 -------------------
+#
+# 첫 실사용에서 사용자가 남긴 말이 그대로 이 절의 근거다: *"진행하고 있는지
+# 멈춘건지 구별이 불가능"*. 침묵 구간은 두 군데다. (1) 자식 기동에 수 초가
+# 걸리고 그 사이 stdout 이 조용하다. (2) 실제 스트림의 첫 프레임인 `system`
+# 타입을 지금까지 통째로 버렸다 — 그것이 "자식이 살아 있다" 는 가장 이른
+# 증거인데도.
+
+
+def test_child_start_emits_a_progress_event_before_anything_else(cfg, tmp_path):
+    """첫 프레임이 오기 전에도 화면이 움직여야 한다.
+
+    실제 claude 는 기동에 수 초가 걸리고 그 사이 stdout 이 조용하다.
+    사용자가 "진행 중인지 멈춘 건지 모르겠다" 고 한 구간이 정확히 여기다.
+    """
+    evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(tmp_path, OK_LINES)))
+    assert evs[0].kind == "progress"
+    assert "깨우는" in evs[0].data["phase"]
+
+
+def test_system_frames_become_progress_not_silence(cfg, tmp_path):
+    """지금은 알 수 없는 type 이라 버리는 프레임이 살아있다는 증거다."""
+    lines = [json.dumps({"type": "system", "subtype": "hook_started"},
+                        ensure_ascii=False)] + OK_LINES
+    evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(tmp_path, lines)))
+    phases = [e.data["phase"] for e in evs if e.kind == "progress"]
+    assert "준비 중" in phases
+
+
+def test_tool_use_names_the_tool_in_progress(cfg, tmp_path):
+    evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(tmp_path, OK_LINES)))
+    phases = [e.data["phase"] for e in evs if e.kind == "progress"]
+    assert any("Bash" in p and "실행" in p for p in phases)
+
+
+def test_progress_never_arrives_after_done(cfg, tmp_path):
+    """done 뒤에 진행 표시가 오면 화면이 끝난 턴을 계속 도는 것처럼 보인다."""
+    evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(tmp_path, OK_LINES)))
+    kinds = [e.kind for e in evs]
+    assert kinds.index("done") == len(kinds) - 1
+
+
+def test_a_silent_child_still_produces_progress(cfg, tmp_path, monkeypatch):
+    """5초 무음에도 하트비트가 나가야 한다 — 이것이 '멈춘 게 아니다' 의 유일한 증거다."""
+    monkeypatch.setattr("qatc.app.chat._HEARTBEAT_SECONDS", 0.2)
+    lines = ["__SLEEP__0.6"] + OK_LINES      # 가짜가 이 지시를 보고 잠든다
+    evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(tmp_path, lines)))
+    phases = [e.data["phase"] for e in evs if e.kind == "progress"]
+    assert "기다리는 중" in phases

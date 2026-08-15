@@ -19,6 +19,12 @@
  * `notice` 프레임은 오류도 `done` 도 아니다 — 앱이 사용자에게 하는 말이고,
  * 그 턴은 계속 진행된다. 그래서 이 프레임만으로는 입력을 풀지도, 패널을
  * 다시 읽지도 않는다.
+ *
+ * `progress` 프레임도 마찬가지로 아무 것도 확정하지 않는다 — 지금 무엇을
+ * 하는 중인지만 말한다. 이 화면은 그 위에 **자체 타이머**를 한 겹 더 얹는다:
+ * 백엔드가 한마디도 못 하는 구간에서도 경과 초는 계속 올라가야 하기 때문이다.
+ * 그 침묵 구간이 이 기능이 생긴 이유다 ("진행하고 있는지 멈춘건지 구별이
+ * 불가능").
  */
 
 const state = {
@@ -404,6 +410,67 @@ function scrollChatToBottom() {
   log.scrollTop = log.scrollHeight;
 }
 
+// --- 진행 표시 ----------------------------------------------------------
+//
+// 두 겹이다. **경과 초는 거짓말을 할 수 없다** — 백엔드가 한마디도 못 해도
+// 이 숫자는 1초마다 올라가므로 화면이 멈춘 것처럼 보이지 않는다. `progress`
+// 프레임은 *무엇을 하는 중인지* 를 말해 준다. 하나만으론 부족하다: 타이머만
+// 있으면 뭘 하는지 모르고, 이벤트만 있으면 침묵 구간에서 화면이 멈춘다.
+//
+// 수명은 턴과 정확히 같다 — `setTurnInProgress` 한 곳에서만 켜고 끈다.
+// 그래야 어떤 실패 경로(서버 거절·통신 끊김·프레임 없는 종료)로 빠져도
+// 표시가 혼자 남아 영원히 도는 일이 없다.
+const progress = { node: null, phaseEl: null, elapsedEl: null, timer: null, startedAt: 0 };
+
+function startProgress() {
+  stopProgress();
+  progress.startedAt = Date.now();
+  progress.phaseEl = el("span", { class: "progress-phase", text: "claude 를 깨우는 중" });
+  progress.elapsedEl = el("span", { class: "progress-elapsed", text: "0초" });
+  const dots = el("span", { class: "progress-dots" }, [el("i", {}), el("i", {}), el("i", {})]);
+  progress.node = el("div", { class: "progress" }, [
+    dots, progress.phaseEl, progress.elapsedEl,
+  ]);
+  document.getElementById("chat-log").appendChild(progress.node);
+  progress.timer = setInterval(tickProgress, 1000);
+  scrollChatToBottom();
+}
+
+function tickProgress() {
+  if (!progress.elapsedEl) return;
+  progress.elapsedEl.textContent = formatElapsed(
+    Math.floor((Date.now() - progress.startedAt) / 1000)
+  );
+}
+
+function formatElapsed(seconds) {
+  if (seconds < 60) return `${seconds}초`;
+  return `${Math.floor(seconds / 60)}분 ${seconds % 60}초`;
+}
+
+function setProgressPhase(phase) {
+  if (!progress.phaseEl || !phase) return;
+  progress.phaseEl.textContent = phase;
+}
+
+// 말풍선이나 알림이 로그에 붙으면 진행 표시가 그 **위**에 남는다. 항상 맨
+// 아래로 다시 옮겨, "지금 기다리는 중" 이 늘 마지막 줄에 오게 한다.
+function keepProgressLast() {
+  const log = document.getElementById("chat-log");
+  if (progress.node && progress.node.parentNode === log) log.appendChild(progress.node);
+}
+
+function stopProgress() {
+  if (progress.timer !== null) clearInterval(progress.timer);
+  if (progress.node && progress.node.parentNode) {
+    progress.node.parentNode.removeChild(progress.node);
+  }
+  progress.node = null;
+  progress.phaseEl = null;
+  progress.elapsedEl = null;
+  progress.timer = null;
+}
+
 function appendUserMessage(text) {
   const log = document.getElementById("chat-log");
   const bubble = el("div", { class: "msg msg-user" }, [el("p", { text })]);
@@ -423,6 +490,7 @@ function attachAssistantBubble(turn) {
   if (turn.attached) return;
   document.getElementById("chat-log").appendChild(turn.bubble);
   turn.attached = true;
+  keepProgressLast();
 }
 
 function appendAssistantDelta(turn, text) {
@@ -459,6 +527,7 @@ function appendErrorMessage(message) {
 function appendNoticeMessage(message) {
   const log = document.getElementById("chat-log");
   log.appendChild(el("div", { class: "msg msg-notice" }, [el("p", { text: message })]));
+  keepProgressLast();
   scrollChatToBottom();
 }
 
@@ -466,6 +535,8 @@ function setTurnInProgress(value) {
   turnInProgress = value;
   document.getElementById("chat-send").disabled = value;
   document.getElementById("chat-input").disabled = value;
+  if (value) startProgress();
+  else stopProgress();
 }
 
 function handleChatFrame(frame, turn) {
@@ -484,8 +555,16 @@ function handleChatFrame(frame, turn) {
     }
   }
 
-  if (kind === "delta") {
+  if (kind === "progress") {
+    // 아무 것도 확정하지 않는 표시다 — 여기서 입력을 풀지도, 패널을 다시
+    // 읽지도 않는다. 그 판단은 `done`/`error` 만 한다.
+    setProgressPhase(data.phase || "");
+  } else if (kind === "delta") {
     appendAssistantDelta(turn, data.text || "");
+    // 답이 흐르기 시작했다 — 이 순간부터 "기다리는 중" 은 거짓말이다.
+    // 표시를 지우지는 않는다: 도구 호출 뒤에 다시 긴 침묵이 오는 것이 실제
+    // 턴의 모양이라, 지워 버리면 그 구간이 처음의 문제로 되돌아간다.
+    setProgressPhase("답하는 중");
   } else if (kind === "tool") {
     appendToolCall(turn, data.name || "", data.summary || "");
   } else if (kind === "notice") {
