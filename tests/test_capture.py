@@ -6,7 +6,7 @@ import pytest
 from PIL import Image
 
 from qatc.capture import CaptureError, WindowInfo, select_window
-from qatc.capture import MAX_EDGE, grab_window
+from qatc.capture import MAX_EDGE, grab_window, _is_occluded
 from qatc.profiles import GameProfile
 
 PNG_MAGIC = bytes([137, 80, 78, 71, 13, 10, 26, 10])
@@ -168,3 +168,54 @@ def test_a_small_capture_is_left_alone():
     raw = grab_window(_w(), printer=lambda i: _img(size=(800, 600)),
                       scraper=lambda i: _img(), occluded=lambda i: False)
     assert _png_size(raw) == (800, 600)
+
+
+# --- `_is_occluded` 의 합치는 규칙 ---------------------------------------
+
+
+def test_all_nine_points_on_target_means_not_occluded():
+    """9곳 전부가 대상 창이면 안 가려진 것 - 성공 경로가 막히면 안 된다."""
+    window = _w()
+    assert _is_occluded(window, root_at=lambda x, y: window.handle) is False
+
+
+def test_one_point_off_target_means_occluded():
+    """8/9 이 대상이어도 나머지 1곳이 다른 창이면 가려진 것으로 본다.
+
+    "한 점이라도 보이면 안 가려짐" 이던 예전 규칙이 정확히 이 경우를
+    놓쳤다 - 버튼을 누르는 순간 사용자는 브라우저 안에 있으므로 창 대부분이
+    가려진 채로 찍히는 것이 예외가 아니라 일상이다. 거짓 "안 가려짐" 은
+    엉뚱한 화면을 조용히 사용자에게 보낸다 - 거짓 "가려짐"(헛걸음 한 번,
+    안내문 하나)보다 훨씬 비싸다.
+    """
+    window = _w()
+    # 9번째로 계산되는 점(마지막 n=3, m=3)만 다른 창을 돌려준다.
+    left, top, right, bottom = window.rect
+    miss = (left + (right - left) * 3 // 4, top + (bottom - top) * 3 // 4)
+
+    def root_at(x, y):
+        return 999 if (x, y) == miss else window.handle
+
+    assert _is_occluded(window, root_at=root_at) is True
+
+
+def test_all_points_off_target_means_occluded():
+    """가장 흔한 경우 - 창이 완전히 덮여 있다."""
+    window = _w()
+    assert _is_occluded(window, root_at=lambda x, y: 999) is True
+
+
+def test_exactly_nine_distinct_points_inside_the_rect_are_sampled():
+    """표본이 늘거나 줄면 이 판정의 보수성 근거(9곳)가 조용히 바뀐다."""
+    window = _w(rect=(0, 0, 1920, 1080))
+    seen = []
+
+    def root_at(x, y):
+        seen.append((x, y))
+        return window.handle       # 전부 대상이어야 조기 반환 없이 9곳 다 돈다
+
+    assert _is_occluded(window, root_at=root_at) is False
+    assert len(seen) == 9
+    assert len(set(seen)) == 9, "9개 지점이 서로 달라야 한다"
+    left, top, right, bottom = window.rect
+    assert all(left <= x <= right and top <= y <= bottom for x, y in seen)

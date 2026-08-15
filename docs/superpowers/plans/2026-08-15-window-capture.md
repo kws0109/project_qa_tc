@@ -1011,10 +1011,20 @@ from ..profiles import load_profiles
 
 `test_no_read_endpoint_changes_a_single_byte_of_the_knowledge_root` 에 한 줄 더한다. 새 엔드포인트는 이 가드를 지나야 한다 — 지식 루트를 건드리지 않는다는 것이 이 앱의 중심 성질이다.
 
+`app` 픽스처의 `profiles_dir` 는 만들어지지 않은 폴더를 가리키므로, 프로파일을
+먼저 써 넣지 않으면 라우트가 `list_windows` 를 부르기도 전에 404 로 끝나
+성공 경로를 전혀 검사하지 못한다. 프로파일을 만들고 세 이음매를 스텁한 뒤
+200 을 확인한다:
+
 ```python
     # 캡처도 지식 루트를 건드리지 않는다. OS 는 스텁한다.
-    monkeypatch.setattr("qatc.app.server.list_windows", lambda: [])
-    c.post("/api/capture", json={"game": "starrail"}).get_data()
+    (tmp_path / "p").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "p" / "starrail.yaml").write_text(
+        "name: 스타레일" + chr(10) + "window:" + chr(10) + "  process: StarRail.exe",
+        encoding="utf-8")
+    _stub_capture(monkeypatch)
+    r = c.post("/api/capture", json={"game": "starrail"})
+    assert r.status_code == 200, r.get_data(as_text=True)
 ```
 
 - [ ] **Step 6: 통과 확인**

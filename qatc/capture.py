@@ -231,6 +231,19 @@ _user32.WindowFromPoint.argtypes = [wintypes.POINT]
 _user32.GetAncestor.restype = wintypes.HWND
 _user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
 
+# `list_windows` 가 EnumWindows 콜백에서 부르는 여섯 함수 - 전부 HWND 를
+# 받는다. argtypes 를 안 주면 이번엔 restype 이 아니라 **인자** 쪽에서 같은
+# 계열의 문제가 난다: ctypes 가 파이썬 int 인 hwnd 를 기본값인 32비트
+# c_int 로 포장하려다, 상위 비트가 채워진 부호 확장 핸들 값이면
+# OverflowError 로 죽거나 운 좋게 들어맞는 값이면 조용히 잘못 잘린 핸들을
+# 넘긴다.
+_user32.IsWindowVisible.argtypes = [wintypes.HWND]
+_user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+_user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+_user32.GetWindowRect.argtypes = [wintypes.HWND, wintypes.LPRECT]
+_user32.IsIconic.argtypes = [wintypes.HWND]
+_user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, wintypes.PDWORD]
+
 
 def _ensure_dpi_aware() -> None:
     """`SetProcessDPIAware` 를 첫 캡처 때 한 번만 부른다.
@@ -316,11 +329,17 @@ def _print_window(info: WindowInfo):
     if width <= 0 or height <= 0:
         return None
 
-    window_dc = user32.GetWindowDC(info.handle)
-    memory_dc = gdi32.CreateCompatibleDC(window_dc)
-    bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
-    previous = gdi32.SelectObject(memory_dc, bitmap)
+    # 네 획득을 전부 try 안으로 들인다 - 밖에 있으면 예컨대
+    # `CreateCompatibleBitmap` 이 실패했을 때 이미 얻은 `window_dc`·
+    # `memory_dc` 를 아무도 놓아주지 않는다. 대신 finally 에서 각 핸들이
+    # 실제로 얻어졌는지 하나씩 확인해야 한다 - 실패한 자리는 여전히
+    # `None`/`0` 이라 그대로 넘기면 없는 핸들에 해제를 시도한다.
+    window_dc = memory_dc = bitmap = previous = None
     try:
+        window_dc = user32.GetWindowDC(info.handle)
+        memory_dc = gdi32.CreateCompatibleDC(window_dc)
+        bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
+        previous = gdi32.SelectObject(memory_dc, bitmap)
         if not user32.PrintWindow(info.handle, memory_dc, _PW_RENDERFULLCONTENT):
             return None
         header = _BitmapInfoHeader()
@@ -331,17 +350,25 @@ def _print_window(info: WindowInfo):
         header.biBitCount = 32
         header.biCompression = 0
         buf = ctypes.create_string_buffer(width * height * 4)
-        gdi32.GetDIBits(memory_dc, bitmap, 0, height, buf, ctypes.byref(header), 0)
+        # MSDN: 비트맵이 DC 에 선택된 채로 `GetDIBits` 를 부르는 것은
+        # 문서화된 미정의 동작이다(동작은 하지만 근거로 삼을 계약이 아니다).
+        # `window_dc` 에는 이 비트맵을 선택한 적이 없으므로 그 대신 넘긴다
+        # - 픽셀은 `memory_dc` 에 그려진 것과 같다(같은 비트맵을 읽을 뿐).
+        gdi32.GetDIBits(window_dc, bitmap, 0, height, buf, ctypes.byref(header), 0)
         return Image.frombuffer("RGBA", (width, height), buf, "raw", "BGRA", 0, 1)
     finally:
         # 선택된 채로는 DeleteObject 가 실패한다(FALSE, 안 지워짐) - 지우기
         # 전에 원래 비트맵으로 되돌려야 한다. 안 그러면 호출마다 HBITMAP 이
         # 하나씩 새고, 오래 떠 있는 서버는 GDI 핸들 상한(기본 10,000)에
         # 부딪혀 캡처뿐 아니라 프로세스 전체의 GDI 호출이 죽는다.
-        gdi32.SelectObject(memory_dc, previous)
-        gdi32.DeleteObject(bitmap)
-        gdi32.DeleteDC(memory_dc)
-        user32.ReleaseDC(info.handle, window_dc)
+        if memory_dc and previous:
+            gdi32.SelectObject(memory_dc, previous)
+        if bitmap:
+            gdi32.DeleteObject(bitmap)
+        if memory_dc:
+            gdi32.DeleteDC(memory_dc)
+        if window_dc:
+            user32.ReleaseDC(info.handle, window_dc)
 
 
 def _screen_grab(info: WindowInfo) -> Image.Image:
@@ -350,21 +377,33 @@ def _screen_grab(info: WindowInfo) -> Image.Image:
     return ImageGrab.grab(bbox=info.rect, all_screens=True)
 
 
-def _is_occluded(info: WindowInfo) -> bool:
-    """창 사각형 안 9개 지점에서 최상위 창이 대상인지 본다.
-
-    한 점만 보면 투명 영역·둥근 모서리에서 오판한다. `WindowFromPoint` 는
-    자식 컨트롤을 돌려주므로 `GetAncestor(GA_ROOT)` 로 루트까지 올라가 비교한다.
-    """
-    _ensure_dpi_aware()
+def _root_at(x: int, y: int) -> int:
+    """화면 좌표 한 점의 최상위 창 핸들. `WindowFromPoint` 는 자식 컨트롤을
+    돌려주므로 `GetAncestor(GA_ROOT)` 로 루트까지 올라간다."""
     user32 = ctypes.windll.user32
+    hit = user32.WindowFromPoint(wintypes.POINT(x, y))
+    root = user32.GetAncestor(hit, 2)      # GA_ROOT
+    return int(root or 0)
+
+
+def _is_occluded(info: WindowInfo, *, root_at=None) -> bool:
+    """창 사각형 안 9개 지점 **전부**가 대상 창으로 판정돼야 안 가려진 것으로 본다.
+
+    한 점만 보면 투명 영역·둥근 모서리에서 오판한다. 그렇다고 "한 점이라도
+    보이면 안 가려짐"으로 합치면 비대칭을 잘못 다루게 된다 - 8/9 지점이
+    브라우저에 덮인 창도 통과해 `_screen_grab` 이 브라우저를 찍고, 사용자는
+    그걸 게임 화면으로 믿는다. 반대로 "하나라도 벗어나면 가려짐"으로
+    합치면 최악의 경우가 헛걸음(다시 눌러 달라는 안내) 하나일 뿐이다. 버튼을
+    누르는 순간 사용자는 반드시 브라우저 안에 있으므로 이 경로는 예외가
+    아니라 일상 경로다 - 안전한 쪽으로 합쳐야 한다.
+    """
+    root_at = root_at or _root_at
+    _ensure_dpi_aware()
     left, top, right, bottom = info.rect
     for n in (1, 2, 3):
         for m in (1, 2, 3):
             x = left + (right - left) * n // 4
             y = top + (bottom - top) * m // 4
-            hit = user32.WindowFromPoint(wintypes.POINT(x, y))
-            root = user32.GetAncestor(hit, 2)      # GA_ROOT
-            if int(root or 0) == info.handle:
-                return False        # 한 점이라도 보이면 가려지지 않은 것
-    return True
+            if root_at(x, y) != info.handle:
+                return True         # 한 점이라도 벗어나면 가려진 것
+    return False

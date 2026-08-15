@@ -199,8 +199,12 @@ def create_app(cfg: AppConfig) -> Flask:
         # 이름의 생김새를 보지 않고 **실재하는 프로파일 목록과 대조한다.**
         profile = load_profiles(cfg.profiles_path).get(game)
         if profile is None:
+            # 왼쪽 트리는 지식 루트의 `.db` 파일로 만들어지는데 이 대조는
+            # `profiles/*.yaml` 을 본다 - DB 는 있는데 프로파일이 없는
+            # 게임이면 "트리에서 다시 고르라" 는 안내가 막다른 길이다.
+            # `no_window_config` 문구와 같은 자리를 짚도록 맞춘다.
             return jsonify({"error": f"'{game}' 프로파일이 없습니다. "
-                                     f"왼쪽 트리에서 게임을 다시 고르세요."}), 404
+                                     f"profiles/{game}.yaml 을 만들어 주세요."}), 404
         try:
             raw = grab_window(select_window(list_windows(), profile))
         except CaptureError as exc:

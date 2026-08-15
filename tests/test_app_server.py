@@ -403,8 +403,19 @@ def test_no_read_endpoint_changes_a_single_byte_of_the_knowledge_root(app, monke
         "images": [{"data": _b64(_png()), "media_type": "image/png"}],
     }).get_data()
     # 캡처도 지식 루트를 건드리지 않는다. OS 는 스텁한다.
-    monkeypatch.setattr("qatc.app.server.list_windows", lambda: [])
-    c.post("/api/capture", json={"game": "starrail"}).get_data()
+    #
+    # 이 앱 픽스처(`profiles_dir`)는 `tmp_path/"p"` 를 가리키지만 그 폴더를
+    # 만들지 않는다 - `load_profiles` 가 `{}` 를 돌려주고 라우트는
+    # `list_windows` 를 부르기도 전에 404 로 끝난다. 프로파일을 직접 써
+    # 넣지 않으면 이 줄은 "404 가 안 쓴다" 만 증명할 뿐, 정작 검사해야 할
+    # `grab_window` 이후의 성공 경로는 한 번도 타지 않는다.
+    (tmp_path / "p").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "p" / "starrail.yaml").write_text(
+        "name: 스타레일" + chr(10) + "window:" + chr(10) + "  process: StarRail.exe",
+        encoding="utf-8")
+    _stub_capture(monkeypatch)
+    r = c.post("/api/capture", json={"game": "starrail"})
+    assert r.status_code == 200, r.get_data(as_text=True)
 
     after = _snapshot(root)
     assert after == before, (
