@@ -847,3 +847,40 @@ def test_the_documented_tc_add_command_actually_runs(cfg_env, capsys, tmp_path):
 
     assert main(argv) == 0, capsys.readouterr().out
     assert "TC 1건 저장" in capsys.readouterr().out
+
+
+def test_the_documented_json_path_is_not_a_repository_folder():
+    """임시 JSON 은 **저장소 밖**에 쓰라고 해야 한다 — 실측으로 배운 것.
+
+    처음엔 `.qatc-tmp/<계열>.json` 이라고 못 박았다. 라이브에서 세 턴을 돌려
+    본 결과 그 경로 쓰기가 매번 거부됐다. `.claude/settings.json` 에
+    `Write(.qatc-tmp/**)` 를 넣어 봐도 마찬가지였다 — 프로젝트 설정에 새로
+    생긴 규칙은 그 자리에서 곧바로 효력을 갖지 않고, 승인 창에 답할 주체가
+    없는 실행에서는 승인될 방법이 없다. 모델이 매번 스스로 우회했지만
+    그건 요행이고, 우회하는 동안 턴 하나를 통째로 헛썼다(실측: 거부 원인을
+    `ls`·`git diff` 로 조사하는 데만 35초).
+
+    그래서 문서는 **자리를 고정하지 않는다**: 승인 없이 쓸 수 있는 임시
+    폴더에 쓰고 그 절대 경로를 넘기라고만 한다. 실제로 세 번의 라이브 턴이
+    전부 그렇게 동작했고 `tc add` 는 매번 첫 시도에 통과했다.
+
+    이 테스트가 고정하는 것: 예시 경로가 하드코딩된 저장소 상대 경로가
+    아니라 자리표시자여야 한다는 것, 그리고 산문이 그 이유를 말해야 한다는 것.
+    """
+    text = SKILL.read_text(encoding="utf-8")
+    adds = [i for i in _executed_invocations(text) if " tc add " in i]
+    assert adds
+    for inv in adds:
+        path = re.search(r"--json\s+(\S+)", inv).group(1)
+        assert "<" in path and ">" in path, (
+            f"임시 JSON 경로를 저장소 안 자리로 못 박았습니다: {path!r} — "
+            f"그 자리 쓰기는 승인이 필요할 수 있고, 승인할 주체가 없는 "
+            f"실행에서는 그 단계가 막힙니다"
+        )
+
+    # 자리표시자만 두면 모델이 아무 데나 고를 수 있다 — **어디에** 써야
+    # 하는지를 산문이 정확히 말해야 자리표시자가 지시가 된다.
+    step3 = _flat(text.split("## 3단계", 1)[1].split("## 4단계", 1)[0])
+    assert "승인 없이 쓸 수 있는 임시 폴더" in step3, (
+        "3단계가 임시 JSON 을 어디에 써야 하는지 말하지 않습니다"
+    )

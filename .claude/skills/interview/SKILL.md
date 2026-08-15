@@ -178,7 +178,10 @@ description: 게임 컨텐츠 QA 인터뷰를 진행한다. 사용자가 컨텐�
 열리기 때문이다). 이 거부는 프로젝트 allowlist 로 구제되지 않고, 승인 창에 답할
 주체가 없는 실행에서는 그 자리에서 턴이 끝난다.
 
-먼저 `Write` 도구로 `.qatc-tmp/<계열>.json` 에 이 모양을 쓴다:
+먼저 `Write` 도구로 임시 JSON 파일을 만든다. **저장소 폴더가 아니라 승인 없이
+쓸 수 있는 임시 폴더에 쓰고, 그 절대 경로를 넘긴다** — 저장소 안 경로는 쓰기
+승인이 필요할 수 있고, 승인 창에 답할 주체가 없는 실행에서는 그 자리에서
+막힌다(실측: 저장소 폴더 쓰기가 거부돼 턴 하나를 헛되이 썼다). 내용은 이 모양이다:
 
 ```json
 {"testcases": [
@@ -188,10 +191,10 @@ description: 게임 컨텐츠 QA 인터뷰를 진행한다. 사용자가 컨텐�
 ]}
 ```
 
-그 다음 그 경로를 `--json` 에 넘겨 실행한다:
+그 다음 그 **절대 경로**를 `--json` 에 넘겨 실행한다:
 
 ```bash
-.venv/Scripts/qatc.exe tc add <컨텐츠> --family "정상 경로" --origin interview --json .qatc-tmp/정상경로.json
+.venv/Scripts/qatc.exe tc add <컨텐츠> --family "정상 경로" --origin interview --json <임시폴더>/정상경로.json
 ```
 
 `--origin` 을 정확히 고른다:
