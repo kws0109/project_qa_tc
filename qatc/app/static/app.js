@@ -236,11 +236,18 @@ function selectTc(id) {
   renderReview();
 }
 
-function startNewConversation() {
+// `선택 해제` 버튼의 핸들러. 이름 그대로 컨텐츠 선택과 채팅 로그만 지운다 —
+// 서버에는 아무것도 보내지 않는다. **세션을 리셋하지 않는다**: 다음 메시지는
+// `content: null` 로 가서 `__default__` 세션 키를 그대로 재개한다(새 세션을
+// 만드는 라우트를 추가하지 않기로 한 결정 — 검증 없는 새 POST 엔드포인트가
+// 정확히 `/api/chat` 결함이 생긴 자리였다). 예전 이름(`새 대화`)과 예전
+// 동작(로그를 안 지움)은 둘 다 이 함수가 실제로 하는 일과 어긋났다.
+function clearSelection() {
   state.selectedGame = null;
   state.selectedContent = null;
   state.selectedTcId = null;
   state.contentDetail = null;
+  document.getElementById("chat-log").innerHTML = "";
   renderTree();
   updateChatHeader();
   renderReview();
@@ -582,7 +589,7 @@ function bindChatForm() {
 
 function init() {
   bindChatForm();
-  document.getElementById("chat-new-btn").addEventListener("click", startNewConversation);
+  document.getElementById("chat-new-btn").addEventListener("click", clearSelection);
   document.getElementById("export-btn").addEventListener("click", exportContent);
   updateChatHeader();
   renderReview();

@@ -333,11 +333,31 @@ _HOSTILE_CONTENT_QUERIES = [
 ]
 
 
-def test_no_read_endpoint_changes_a_single_byte_of_the_knowledge_root(app, tmp_path):
-    """읽기 경로 전체를 적대적 입력까지 태워도 지식 루트가 그대로여야 한다."""
+def test_no_read_endpoint_changes_a_single_byte_of_the_knowledge_root(app, monkeypatch, tmp_path):
+    """읽기 경로 전체와, `stream_turn` 을 스텁으로 갈아끼운 `/api/chat` 핸들러
+    자체를 태워도 지식 루트가 그대로여야 한다.
+
+    `/api/chat` 은 엄밀히는 "읽기" 가 아니다 — 이 앱에서 지식 DB 를 바꾸는
+    유일하게 승인된 경로다. 그 쓰기는 반드시 `stream_turn` 이 띄우는
+    `claude` 자식 프로세스(그리고 그 프로세스가 스스로 부르는 `qatc` CLI)
+    안에서만 일어나야 한다 — **핸들러 자신**이 지식 DB 를 직접 만지면
+    게이트가 우회된다. 그런데 이 가드는 지금까지 `/api/chat` 을 전혀 태우지
+    않았다: 핸들러 안에 원시 sqlite 쓰기를 심어도 이 테스트는 볼 수 없었다.
+    실제 턴(자식 프로세스)이 만드는 쓰기까지 여기서 검증할 수는 없으므로
+    (진짜 `claude` 를 부르면 비용이 든다), `stream_turn` 을 스텁으로 바꿔
+    핸들러 자신의 동작만 격리해서 본다 — 스텁이 아무것도 안 쓰는데 스냅샷이
+    바뀐다면 그건 핸들러 코드가 직접 쓴 것이다.
+    """
     root = tmp_path / "k"
     before = _snapshot(root)
     assert before, "픽스처가 지식 DB 를 하나도 안 만들었습니다"
+
+    from qatc.app import chat as chat_mod
+
+    def fake_stream(cfg, message, content, **kw):
+        yield chat_mod.ChatEvent("done", {})
+
+    monkeypatch.setattr("qatc.app.server.stream_turn", fake_stream)
 
     c = app.test_client()
     c.get("/")
@@ -346,6 +366,7 @@ def test_no_read_endpoint_changes_a_single_byte_of_the_knowledge_root(app, tmp_p
     c.get("/api/content", query_string={"game": "starrail", "name": "파티편성"})
     for query in _HOSTILE_CONTENT_QUERIES:
         c.get("/api/content", query_string=query)
+    c.post("/api/chat", json={"message": "안녕", "content": None}).get_data()
 
     after = _snapshot(root)
     assert after == before, (
@@ -389,12 +410,18 @@ def test_a_traversing_game_never_touches_a_file_outside_the_knowledge_root(app, 
 
 
 def test_export_writes_the_xlsx_and_leaves_every_db_untouched(app, tmp_path, monkeypatch):
-    """`/api/export` 가 만들어도 되는 것은 xlsx 하나뿐이다 — DB 는 불변.
+    """`/api/export` 가 만들어도 되는 것은 xlsx 하나뿐이다 — 그 외 지식 루트는 불변.
 
     M4(실측): `api_export` 안에 스토어 자신의 원시 커넥션으로 슬롯 상태를
     바꾸고 commit 하는 줄을 심어도 494 전부 통과했다 — **무쓰기 가드까지
     포함해서.** 그 커넥션은 이름 대조 목록 어디에도 안 걸리기 때문이다.
     이름이 아니라 바이트를 보면 그 우회도 그냥 막힌다.
+
+    이전 버전은 비교를 `.db` 확장자로 미리 걸러서 했다 — 그러면 읽기 경로가
+    `.db` 가 아닌 엉뚱한 파일을 지식 루트에 떨어뜨려도 이 테스트는 보지
+    못한다(필터 자체가 그 결함을 가린다). 그래서 지식 루트 전체를 찍고,
+    이 엔드포인트가 실제로 만들어도 되는 xlsx **한 파일**만 허용 목록에서
+    빼는 방식으로 바꾼다 — 그 밖의 어떤 파일이 새로 생기거나 바뀌어도 남는다.
     """
     import qatc.app.server as server_mod
     from qatc.models import Priority, TCKind, TCOrigin, TestCase
@@ -407,15 +434,23 @@ def test_export_writes_the_xlsx_and_leaves_every_db_untouched(app, tmp_path, mon
         st.add_testcase("파티편성", "정상 경로", tc, ["core_action"])
 
     monkeypatch.setattr(server_mod.os, "startfile", lambda p: None, raising=False)
-    before = {k: v for k, v in _snapshot(root).items() if k.endswith(".db")}
+    before = _snapshot(root)
 
     r = app.test_client().post("/api/export",
                                json={"game": "starrail", "content": "파티편성"})
     assert r.status_code == 200
 
-    after = {k: v for k, v in _snapshot(root).items() if k.endswith(".db")}
-    assert after == before, (
-        "엑셀 내보내기가 지식 DB 를 바꿨습니다:\n" + _describe_delta(before, after)
+    after = _snapshot(root)
+    from pathlib import Path as _Path
+    expected_new = str(_Path(r.get_json()["path"]).relative_to(root))
+    new_files = set(after) - set(before)
+    assert new_files == {expected_new}, (
+        "export 가 예상 밖의 파일을 만들거나 지웠습니다:\n" + _describe_delta(before, after)
+    )
+    after_without_export = {k: v for k, v in after.items() if k != expected_new}
+    assert after_without_export == before, (
+        "엑셀 내보내기가 지식 DB(또는 다른 기존 파일)를 바꿨습니다:\n"
+        + _describe_delta(before, after_without_export)
     )
 
 
@@ -623,6 +658,48 @@ def test_the_page_script_still_talks_to_every_endpoint_and_frame_kind(app):
         assert kind in js, f"화면이 {kind} 프레임을 다루지 않습니다"
     assert "msg-notice" in js, "복구 알림을 그리는 자리가 없습니다"
     assert "http://" not in js and "https://" not in js, "화면이 외부 주소를 씁니다"
+
+
+# --- `선택 해제` 버튼이 이름 그대로 동작한다 (부차 결함, 병합 전 수정) -------
+#
+# 예전 이름 `새 대화` 는 두 번 틀렸다: 눌러도 채팅 로그가 안 지워지고,
+# 서버 호출도 없이 트리 선택만 지운다. 다음 메시지는 `content: null` 로 가서
+# `__default__` 세션 키를 그대로 재개한다 — "새 대화" 가 아니라 기존 대화를
+# 잇는다. 세션을 리셋하는 새 라우트는 만들지 않는다(검증 없는 새 POST
+# 엔드포인트가 정확히 `/api/chat` 결함이 난 자리였다) — 대신 라벨을 실제
+# 동작(`선택 해제`)에 맞추고, 로그를 지우는 동작을 실제로 추가한다.
+
+
+def test_the_selection_clear_button_is_labelled_for_what_it_does(app):
+    """버튼 글자가 `새 대화` 로 되돌아가면 다시 두 번 틀린 이름이 된다."""
+    html = app.test_client().get("/").get_data(as_text=True)
+    assert '<button id="chat-new-btn" type="button">선택 해제</button>' in html
+    assert "새 대화" not in html
+
+
+def test_the_selection_clear_handler_wipes_the_log_and_calls_no_endpoint(app):
+    """핸들러가 실제로 로그를 비우고, 서버는 부르지 않는지를 소스에서 직접 본다.
+
+    라벨만 바뀌고 동작이 그대로면(로그가 안 지워짐) 여전히 거짓말이고,
+    반대로 이 핸들러가 `fetch` 를 부르기 시작하면 그건 세션을 리셋하는
+    새 서버 경로가 몰래 생겼다는 뜻이다 — 둘 다 이 테스트가 잡는다.
+    """
+    import re
+
+    js = app.test_client().get("/static/app.js").get_data(as_text=True)
+    m = re.search(
+        r'getElementById\("chat-new-btn"\)\.addEventListener\("click",\s*(\w+)\)', js)
+    assert m, "chat-new-btn 에 클릭 핸들러가 연결돼 있지 않습니다"
+    handler_name = m.group(1)
+
+    body_match = re.search(
+        r"function\s+" + re.escape(handler_name) + r"\s*\([^)]*\)\s*\{([\s\S]*?)\n\}", js)
+    assert body_match, f"{handler_name} 함수 본문을 찾을 수 없습니다"
+    body = body_match.group(1)
+
+    assert '"chat-log"' in body, "핸들러가 채팅 로그를 건드리지 않습니다"
+    assert 'innerHTML = ""' in body, "핸들러가 로그를 비우지 않습니다"
+    assert "fetch(" not in body, "핸들러가 서버를 호출합니다 — 새 라우트가 생긴 것으로 보입니다"
 
 
 def test_the_stylesheet_draws_a_notice_differently_from_a_bubble(app):

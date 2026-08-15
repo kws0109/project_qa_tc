@@ -236,7 +236,7 @@ def _hostile_games(victim):
     stem = str(victim)[: -len(".db")]
     return [
         ("../victimF", "상위 디렉터리"),
-        ("..\victimF", "역슬래시 상위 디렉터리"),
+        ("..\\victimF", "역슬래시 상위 디렉터리"),
         ("./../victimF", "점 하나를 낀 상위 디렉터리"),
         (stem, "절대 경로 (드라이브 문자)"),
         (stem.replace("\\", "/"), "슬래시로 쓴 절대 경로"),
@@ -297,6 +297,23 @@ def test_the_rejection_is_korean_and_names_the_next_action(cfg):
     assert "Traceback" not in msg
     assert "게임" in msg
     assert "왼쪽" in msg or "slot init" in msg      # 다음 조치를 말한다
+
+
+def test_a_dotfile_named_db_does_not_create_a_ghost_sibling(cfg):
+    """`Path(".db").stem == ".db"` — 이름이 `.db` 뿐인 파일이 있으면
+    옛 stem 대조를 `game=".db"` 가 통과했다.
+
+    `_db_paths()` 의 `*.db` 글롭은 숨김 파일도 잡으므로, 지식 루트에 `.db`
+    라는 이름의 파일이 있을 수 있다. 옛 구현은 `game` 을 실재 stem 집합과
+    대조한 뒤 `f"{game}.db"` 로 경로를 다시 조립했는데, `.db` 는 그 왕복을
+    통과하지 못한다 — `".db" + ".db"` 는 원본과 다른 이름 `.db.db` 다.
+    `KnowledgeStore.open()` 이 열자마자 스키마를 쓰므로, 존재 확인 없이 그
+    이름을 열면 유령 DB 파일이 새로 생긴다.
+    """
+    (cfg.knowledge_path / ".db").write_bytes(b"")
+    with pytest.raises(ContentNotFound):
+        content_detail(cfg, ".db", "아무거나")
+    assert not (cfg.knowledge_path / ".db.db").exists()
 
 
 def test_a_legitimate_game_name_still_resolves(cfg):

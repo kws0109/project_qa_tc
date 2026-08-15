@@ -38,11 +38,25 @@ def resolve_db_path(cfg: AppConfig, game: str) -> Path:
     경로 우회가 나와도 이 대조는 자동으로 막는다. 정상 호출자는 영향이
     없다: 화면이 나르는 `game` 은 `/api/tree` 가 바로 그 `p.stem` 으로 만든
     값뿐이다.
+
+    **`stem` 대조에도 왕복하지 않는 이름이 하나 있었다.** `Path(".db").stem`
+    은 `".db"` 그대로다 — 앞에 점 하나뿐인 이름은 pathlib 가 확장자로 안
+    본다. 지식 루트에 `.db` 라는 이름의 파일이 있으면(`*.db` 글롭이 숨김
+    파일도 잡는다) `game=".db"` 가 `stem` 집합 대조는 통과하는데, 그 값을
+    다시 `f"{game}.db"` 로 조립하면 `.db.db` 라는 **다른** 파일이 된다 —
+    존재 확인 없이 그 경로를 열면 유령 DB 가 새로 생긴다(경로를 여는 행위
+    자체가 쓰기라는 사실은 위 단락과 같다). 그래서 `stem` 을 비교하고
+    문자열로 다시 짜 맞추는 대신, **조립한 경로 자체가 실재하는 DB 파일
+    목록에 있는지**를 직접 본다. 정상 이름은 항상 왕복하므로(`/api/tree`
+    가 주는 `game` 은 늘 `p.stem`) 영향이 없고, 왕복하지 않는 이름은 조립한
+    경로가 목록에 없어 그대로 거부된다 — 그 경로에 `exists()`/`open()` 을
+    한 번도 부르지 않으므로 이 비교 자체는 부작용이 없다.
     """
-    stems = {p.stem for p in _db_paths(cfg)}
-    if game not in stems:
-        raise ContentNotFound(_no_such_game(game, stems))
-    return cfg.knowledge_path / f"{game}.db"
+    paths = _db_paths(cfg)
+    candidate = cfg.knowledge_path / f"{game}.db"
+    if candidate not in paths:
+        raise ContentNotFound(_no_such_game(game, {p.stem for p in paths}))
+    return candidate
 
 
 def _no_such_game(game: str, stems: set[str]) -> str:
