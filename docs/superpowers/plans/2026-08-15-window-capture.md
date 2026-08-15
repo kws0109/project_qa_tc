@@ -587,6 +587,50 @@ from ctypes import wintypes
 _PW_RENDERFULLCONTENT = 0x00000002
 _dpi_ready = False
 
+# 핸들을 돌려주는 함수의 restype 을 지정하지 않으면 ctypes 가 32비트 부호
+# 있는 정수로 해석한다 - 64비트 Windows 에서는 핸들 값이 잘리거나 부호
+# 확장되어, 다음 호출에 엉뚱한 객체를 넘기고도 예외 없이 조용히 틀린
+# 결과를 낸다. GDI 핸들(HDC/HBITMAP)은 실측에서 상위 비트가 채워진
+# 부호 확장 값으로 돌아왔다 - restype 만 고치고 argtypes 를 안 맞추면
+# 그 값을 다음 호출에 넘길 때 ctypes 가 기본값인 32비트 c_int 로 다시
+# 잘못 해석해 OverflowError 가 난다. 그래서 반환뿐 아니라 그 핸들을
+# 인자로 받는 함수 쪽도 함께 지정한다. 모듈이 로드될 때 한 번만 하면 된다.
+_user32 = ctypes.windll.user32
+_gdi32 = ctypes.windll.gdi32
+_kernel32 = ctypes.windll.kernel32
+_psapi = ctypes.windll.psapi
+
+_user32.GetWindowDC.restype = wintypes.HDC
+_user32.GetWindowDC.argtypes = [wintypes.HWND]
+
+_gdi32.CreateCompatibleDC.restype = wintypes.HDC
+_gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+
+_gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+_gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+
+_gdi32.SelectObject.restype = wintypes.HGDIOBJ
+_gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+
+_gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+_gdi32.DeleteDC.argtypes = [wintypes.HDC]
+_user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+_user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+_gdi32.GetDIBits.argtypes = [wintypes.HDC, wintypes.HBITMAP, wintypes.UINT,
+                              wintypes.UINT, ctypes.c_void_p, ctypes.c_void_p,
+                              wintypes.UINT]
+
+_kernel32.OpenProcess.restype = wintypes.HANDLE
+_kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+_kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+_psapi.GetModuleBaseNameW.argtypes = [wintypes.HANDLE, wintypes.HMODULE,
+                                        wintypes.LPWSTR, wintypes.DWORD]
+
+_user32.WindowFromPoint.restype = wintypes.HWND
+_user32.WindowFromPoint.argtypes = [wintypes.POINT]
+_user32.GetAncestor.restype = wintypes.HWND
+_user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+
 
 def _ensure_dpi_aware() -> None:
     """`SetProcessDPIAware` 를 첫 캡처 때 한 번만 부른다.
@@ -675,7 +719,7 @@ def _print_window(info: WindowInfo):
     window_dc = user32.GetWindowDC(info.handle)
     memory_dc = gdi32.CreateCompatibleDC(window_dc)
     bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
-    gdi32.SelectObject(memory_dc, bitmap)
+    previous = gdi32.SelectObject(memory_dc, bitmap)
     try:
         if not user32.PrintWindow(info.handle, memory_dc, _PW_RENDERFULLCONTENT):
             return None
@@ -690,6 +734,11 @@ def _print_window(info: WindowInfo):
         gdi32.GetDIBits(memory_dc, bitmap, 0, height, buf, ctypes.byref(header), 0)
         return Image.frombuffer("RGBA", (width, height), buf, "raw", "BGRA", 0, 1)
     finally:
+        # 선택된 채로는 DeleteObject 가 실패한다(FALSE, 안 지워짐) - 지우기
+        # 전에 원래 비트맵으로 되돌려야 한다. 안 그러면 호출마다 HBITMAP 이
+        # 하나씩 새고, 오래 떠 있는 서버는 GDI 핸들 상한(기본 10,000)에
+        # 부딪혀 캡처뿐 아니라 프로세스 전체의 GDI 호출이 죽는다.
+        gdi32.SelectObject(memory_dc, previous)
         gdi32.DeleteObject(bitmap)
         gdi32.DeleteDC(memory_dc)
         user32.ReleaseDC(info.handle, window_dc)
