@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import threading
 import uuid
@@ -43,6 +44,21 @@ _AUTH_ERROR_MSG = (
 # 다시 뒤지지 않는다(`_looks_like_unknown_session` 참고).
 _UNKNOWN_SESSION_MARKER = "No conversation found with session ID"
 
+#: 세션 복구가 일어났을 때 화면에 그대로 띄우는 문장.
+#:
+#: **이것은 오류가 아니다.** 복구된 턴은 끝까지 성공하고 `done` 이 나가며
+#: 트리·검토 패널도 정상으로 갱신된다. 그래서 `error` 로 보내면 안 된다 —
+#: 프런트가 "턴이 실패했다" 로 읽어, 이 브랜치가 세 번 싸운 "성공처럼
+#: 보이는데 아닌" 결함을 정확히 뒤집은 모양이 된다. 대신 `notice` 라는
+#: 별도 종류로 내보내고 화면은 옅은 시스템 줄로 그린다.
+#:
+#: 문구는 일부러 이렇게 골랐다: 기술 용어가 없고, 사용자가 할 일이 정확히
+#: 하나이며, 무엇이 사라졌다는 암시가 없다 — 슬롯에 들어간 것은 어떤
+#: 경우에도 위험하지 않기 때문이다.
+_RECOVERY_NOTICE = (
+    "대화가 새로 이어졌어요 — 방금 이야기한 내용에 대한 답이라면 한 번만 더 말씀해 주세요"
+)
+
 
 class ClaudeMissing(Exception):
     """`claude` 실행 파일을 찾지 못했다. 메시지는 완성된 한국어 문장이다."""
@@ -53,7 +69,9 @@ class ChatEvent:
     """`stream_turn` 이 흘려보내는 사건 하나.
 
     `kind` 는 `delta`(텍스트 조각) / `tool`(도구 호출) / `done`(턴 종료) /
-    `error`(실패) 중 하나다.
+    `error`(실패) / `notice`(턴은 성공했지만 사용자가 알아야 할 것) 중
+    하나다. `notice` 는 `error` 가 아니다 — 그 턴은 계속 진행되고 `done`
+    으로 끝난다.
     """
 
     kind: str
@@ -227,6 +245,10 @@ def stream_turn(
         + (f" (원인: {reason})" if reason else ""),
         err=True,
     )
+    # 위 `_p` 는 서버 콘솔로 간다 — 로컬 앱 사용자는 그 창을 보지 않는다.
+    # 알리지 않으면 복구는 "모델이 방금 한 질문을 영문 없이 다시 한다" 로만
+    # 나타난다. 그래서 화면에도 같은 사실을 내보낸다.
+    yield ChatEvent("notice", {"kind": "session_restarted", "message": _RECOVERY_NOTICE})
     new_id = str(uuid.uuid4())
     retry_persisted = False
     for retry_ev in _attempt_turn(cfg, message, new_id, False, claude):
@@ -250,7 +272,10 @@ def _attempt_turn(
     창에 답할 UI 가 없으므로 allowlist 가 빗나가면 턴이 조용히 멈춘다.
     """
     session_flag = ["--resume", session_id] if resume else ["--session-id", session_id]
-    cmd = _base_cmd(claude) + [
+    base = resolve_claude(claude)
+    if base is None:
+        raise ClaudeMissing(_MISSING_MSG)
+    cmd = base + [
         "-p",
         *session_flag,
         "--output-format", "stream-json",
@@ -381,6 +406,31 @@ def _base_cmd(claude: str | list[str] | None) -> list[str]:
     if isinstance(claude, str):
         return [claude]
     return list(claude)
+
+
+def resolve_claude(claude: str | list[str] | None = None) -> list[str] | None:
+    """실제로 띄울 명령을 확정한다. 찾지 못하면 `None`.
+
+    **`/api/health` 와 `_attempt_turn` 이 반드시 같은 이 함수를 써야 한다.**
+    예전엔 헬스가 `shutil.which("claude")` 로 보고, 실행은
+    `Popen(["claude"], shell=False)` 로 했다. Windows 에서 그 둘은 갈린다 —
+    `which` 는 `PATHEXT` 를 존중해 `.cmd`/`.ps1` 셰임까지 찾지만,
+    `CreateProcess` 는 확장자 없는 이름에 `.exe` 만 붙인다. npm 식 `.cmd`
+    설치본에서는 배지가 **연결됨** 인데 모든 턴이 `FileNotFoundError` 로
+    죽었다 (실측: `.cmd` 셰임을 PATH 에 두면 `which` 는 찾고
+    `Popen(["이름"])` 은 `[WinError 2]` 로 실패한다).
+
+    해결은 헬스를 실행에 맞춰 좁히는 쪽이 아니라 **실행을 헬스에 맞춰
+    넓히는 쪽**이다. `which` 가 찾아 준 전체 경로를 그대로 `Popen` 에
+    넘기면 `.cmd` 셰임도 실제로 실행된다 (실측: 같은 셰임을 전체 경로로
+    주면 정상 실행). 그래서 `.cmd` 설치본이 "연결됨 인데 안 됨" 에서 그냥
+    "된다" 로 바뀌고, 두 자리가 같은 함수를 부르므로 애초에 갈릴 수 없다.
+    """
+    cmd = _base_cmd(claude)
+    found = shutil.which(cmd[0])
+    if found is None:
+        return None
+    return [found, *cmd[1:]]
 
 
 def _skill_prompt() -> str:

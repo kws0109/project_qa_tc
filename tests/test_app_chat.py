@@ -1,6 +1,7 @@
 """`claude` 자식 프로세스. 진짜 API 는 부르지 않는다."""
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -507,9 +508,10 @@ def test_unknown_resume_target_recovers_with_a_fresh_session(cfg, tmp_path):
 
     evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
 
-    # 사용자에게는 실패한 재개 시도가 전혀 안 보이고, 재시도의 결과만
-    # 정상적인 턴 모양(OK_LINES)으로 도착해야 한다.
-    assert [e.kind for e in evs] == ["delta", "tool", "done"]
+    # 사용자에게 실패한 재개 시도는 **오류로** 보이지 않는다. 대신 복구가
+    # 일어났다는 `notice` 하나가 앞서고, 그 뒤로 재시도의 결과가 정상적인
+    # 턴 모양(OK_LINES)으로 도착한다.
+    assert [e.kind for e in evs] == ["notice", "delta", "tool", "done"]
 
     resume_argv = json.loads(resume_record.read_text(encoding="utf-8"))["argv"]
     assert resume_argv[resume_argv.index("--resume") + 1] == stale_id
@@ -558,7 +560,7 @@ def test_structural_fallback_recovers_even_when_the_wording_has_drifted(cfg, tmp
         resume_record=resume_record, create_record=create_record)
 
     evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
-    assert [e.kind for e in evs] == ["delta", "tool", "done"]
+    assert [e.kind for e in evs] == ["notice", "delta", "tool", "done"]
 
     create_argv = json.loads(create_record.read_text(encoding="utf-8"))["argv"]
     new_id = create_argv[create_argv.index("--session-id") + 1]
@@ -590,7 +592,7 @@ def test_retry_success_with_no_assistant_text_still_persists_the_new_session(cfg
         resume_record=resume_record, create_record=create_record)
 
     evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
-    assert [e.kind for e in evs] == ["done"]
+    assert [e.kind for e in evs] == ["notice", "done"]
 
     create_argv = json.loads(create_record.read_text(encoding="utf-8"))["argv"]
     new_id = create_argv[create_argv.index("--session-id") + 1]
@@ -625,7 +627,7 @@ def test_retry_persists_the_new_session_even_when_it_opens_with_a_tool_call(cfg,
         resume_record=resume_record, create_record=create_record)
 
     evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
-    assert [e.kind for e in evs] == ["tool", "done"]
+    assert [e.kind for e in evs] == ["notice", "tool", "done"]
 
     create_argv = json.loads(create_record.read_text(encoding="utf-8"))["argv"]
     new_id = create_argv[create_argv.index("--session-id") + 1]
@@ -740,7 +742,9 @@ def test_a_second_consecutive_failure_does_not_discard_the_original_session_id(c
     always_unknown = _fake_claude_always_unknown_session(tmp_path, stale_id)
     evs = list(stream_turn(cfg, "y", "파티편성", claude=always_unknown))
 
-    assert [e.kind for e in evs] == ["error"]
+    # 복구를 **시도했다**는 사실은 알린다(`notice`). 그 재시도까지 실패했으니
+    # 그 실패는 `error` 로 이어진다 — 알림이 실패를 덮지 않는다.
+    assert [e.kind for e in evs] == ["notice", "error"]
     # sessions.json 은 원래 id 그대로다 — 재시도가 실패한 새 id 로 덮이지
     # 않았다.
     assert session_id_for(cfg, "파티편성") == stale_id
@@ -964,3 +968,164 @@ def test_close_kills_a_child_that_never_exits(monkeypatch):
     proc = _NeverExitingProc()
     chat_module._close(proc)
     assert proc.killed
+
+
+# --- `claude` 실행 파일 해석 (최종 리뷰 확정 결함 2) -------------------------
+
+
+def _cmd_shim(tmp_path):
+    """npm 식 `.cmd` 셰임을 흉내 낸다 — Windows 설치본의 실제 모양."""
+    d = tmp_path / "shimbin"
+    d.mkdir()
+    (d / "fakeclaude.cmd").write_text("@echo off\r\necho SHIM\r\n", encoding="utf-8")
+    return d
+
+
+def test_health_and_launch_cannot_disagree_about_a_cmd_shim(tmp_path, monkeypatch):
+    """`shutil.which` 와 `Popen` 은 Windows 에서 갈린다 — 그 틈이 배지를 거짓말시켰다.
+
+    `which` 는 `PATHEXT` 를 존중해 `.cmd`/`.ps1` 셰임까지 찾지만
+    `CreateProcess` 는 확장자 없는 이름에 `.exe` 만 붙인다. 헬스가 `which`
+    로 보고 실행이 `Popen(["claude"])` 로 하던 동안, npm 식 `.cmd`
+    설치본에서는 배지가 **연결됨** 인데 모든 턴이 `[WinError 2]` 로 죽었다.
+
+    이 테스트는 그 틈이 **실재함**을 먼저 실행으로 보이고(맨 이름 `Popen`
+    은 실패한다), `resolve_claude` 가 돌려준 형태는 실제로 실행된다는 것을
+    보인다. 그래서 헬스와 실행이 같은 함수를 쓰는 한 갈릴 수 없다.
+    """
+    d = _cmd_shim(tmp_path)
+    monkeypatch.setenv("PATH", str(d) + os.pathsep + os.environ["PATH"])
+
+    resolved = chat_module.resolve_claude("fakeclaude")
+    assert resolved is not None
+    assert Path(resolved[0]).suffix.lower() == ".cmd"
+
+    # (1) 맨 이름은 CreateProcess 가 못 찾는다 — 이 틈이 결함의 원인이었다
+    with pytest.raises(FileNotFoundError):
+        subprocess.Popen(["fakeclaude"], stdout=subprocess.PIPE, shell=False)
+
+    # (2) 해석된 전체 경로는 실제로 실행된다 — 그래서 `.cmd` 설치본이 산다
+    proc = subprocess.Popen(resolved, stdout=subprocess.PIPE, shell=False, text=True)
+    assert "SHIM" in proc.communicate()[0]
+
+
+def test_a_missing_claude_is_reported_before_any_process_is_launched(cfg, monkeypatch):
+    """찾지 못하면 `ClaudeMissing` — `Popen` 이 던지는 `FileNotFoundError` 가 아니다.
+
+    예전엔 `Popen` 을 부른 뒤 `FileNotFoundError` 를 받아 번역했다. 이제는
+    헬스와 같은 해석기가 먼저 판정하므로, `Popen` 이 아예 불리지 않아도
+    같은 한국어 문장이 나와야 한다.
+    """
+    def explode(*a, **kw):
+        raise AssertionError("실행 파일이 없는데 자식 프로세스를 띄웠다")
+
+    monkeypatch.setattr(subprocess, "Popen", explode)
+    with pytest.raises(ClaudeMissing) as e:
+        list(stream_turn(cfg, "x", None, claude=["없는실행파일이름"]))
+    assert "claude" in str(e.value)
+
+
+# --- 세션 복구 알림 (소유자 승인 기능) --------------------------------------
+
+
+#: 화면에 그대로 나가는 문장. 여기 하드코딩하는 것이 요점이다 — 구현에서
+#: 문자열을 가져다 비교하면 문구가 바뀌어도 테스트가 따라 바뀌어 초록이다.
+RECOVERY_NOTICE_TEXT = (
+    "대화가 새로 이어졌어요 — 방금 이야기한 내용에 대한 답이라면 한 번만 더 말씀해 주세요"
+)
+
+
+def test_recovery_tells_the_user_in_words_they_can_act_on(cfg, tmp_path):
+    """복구는 조용히 일어나면 안 된다 — 그러면 "모델이 방금 한 질문을 또 한다" 로만 보인다.
+
+    지금까지 유일한 흔적은 `_p(..., err=True)` 로 나가는 서버 콘솔 줄인데,
+    로컬 앱 사용자는 그 창을 보지 않는다.
+    """
+    list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=tmp_path / "record0.json")))
+    stale_id = session_id_for(cfg, "파티편성")
+
+    claude_cmd = _fake_claude_session_aware(
+        tmp_path, ok_lines=OK_LINES, error_line=_unknown_session_error_line(stale_id),
+        resume_record=tmp_path / "r.json", create_record=tmp_path / "c.json")
+    evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
+
+    notices = [e for e in evs if e.kind == "notice"]
+    assert len(notices) == 1
+    assert notices[0].data["message"] == RECOVERY_NOTICE_TEXT
+
+
+def test_the_recovery_notice_is_not_an_error_and_the_turn_still_completes(cfg, tmp_path):
+    """복구된 턴은 **성공한 턴**이다 — `error` 로 보내면 정반대를 말하게 된다.
+
+    프런트는 `error` 를 "이 턴은 실패했다" 로 읽어 트리·검토 갱신을 건너뛴다
+    (`app.js` 의 갱신 규칙). 복구 뒤 턴은 실제로 슬롯·TC 를 바꿀 수 있으므로,
+    이 알림이 `error` 로 나가면 화면이 낡은 채로 남는다 — 이 브랜치가 세
+    번 싸운 "성공처럼 보이는데 아닌" 결함을 그대로 뒤집은 모양이다.
+    """
+    list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=tmp_path / "record0.json")))
+    stale_id = session_id_for(cfg, "파티편성")
+
+    claude_cmd = _fake_claude_session_aware(
+        tmp_path, ok_lines=OK_LINES, error_line=_unknown_session_error_line(stale_id),
+        resume_record=tmp_path / "r.json", create_record=tmp_path / "c.json")
+    evs = list(stream_turn(cfg, "y", "파티편성", claude=claude_cmd))
+
+    assert not [e for e in evs if e.kind == "error"]
+    assert evs[-1].kind == "done"
+    assert evs[0].kind == "notice"      # 응답보다 먼저 — 뒤늦게 알리면 늦다
+
+
+def test_a_normal_turn_carries_no_notice(cfg, tmp_path):
+    """복구가 없었으면 알림도 없어야 한다 — 매 턴 뜨면 곧 무시된다."""
+    evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(tmp_path, OK_LINES)))
+    assert not [e for e in evs if e.kind == "notice"]
+
+
+# --- 뮤테이션 보강 (최종 리뷰 M2 · M19 · M6 · M5) ---------------------------
+
+
+def test_headless_print_and_model_flags_are_passed(cfg, tmp_path):
+    """`-p` 와 `--model opus` 를 지워도 스위트가 초록이었다 (M2 · M19).
+
+    `-p` 가 빠지면 헤드리스가 아니라 대화형으로 떠서 자식이 영영 안 끝나고,
+    `--model` 이 빠지면 이 도구가 전제한 모델이 아닌 것으로 인터뷰가 돈다.
+    argv 를 읽는 테스트가 이미 넷 있었는데 이 두 자리만 안 봤다.
+    """
+    record = tmp_path / "record.json"
+    list(stream_turn(cfg, "x", None, claude=_fake_claude(
+        tmp_path, OK_LINES, record_to=record)))
+    argv = json.loads(record.read_text(encoding="utf-8"))["argv"]
+    assert "-p" in argv
+    assert argv[argv.index("--model") + 1] == "opus"
+
+
+def test_the_created_flag_lives_on_disk_not_in_process_memory(cfg, tmp_path):
+    """"생성했다" 표시를 모듈 전역 dict 에 담아도 스위트가 초록이었다 (M6).
+
+    같은 프로세스 안에서는 dict 도 파일처럼 동작하므로 재시작을 흉내 낸
+    테스트조차 속는다. 진짜 재시작이면 `--session-id` 를 다시 써서 "already
+    in use" 로 죽는다 — `f9d919b` 가 고친 바로 그 결함이다. 그러니 파일
+    내용을 직접 읽어 확인한다.
+    """
+    list(stream_turn(cfg, "x", "파티편성", claude=_fake_claude(tmp_path, OK_LINES)))
+    saved = json.loads((cfg.knowledge_path / "sessions.json").read_text(encoding="utf-8"))
+    assert saved["파티편성"]["created"] is True
+    assert saved["파티편성"]["id"] == session_id_for(cfg, "파티편성")
+
+
+def test_a_real_failure_is_not_labelled_as_a_missing_session(cfg, tmp_path):
+    """`_looks_like_unknown_session` 을 무조건 참으로 만들어도 초록이었다 (M5).
+
+    참이 되면 모든 실패가 "세션 없음" 으로 분류돼 매 실패마다 턴을 한 번 더
+    태우고(비용 두 배), 사용자에게는 엉뚱한 복구 알림이 뜬다.
+    """
+    lines = [json.dumps({
+        "type": "result", "subtype": "success", "is_error": True,
+        "num_turns": 3, "total_cost_usd": 0.37,
+        "result": "디스크가 가득 찼습니다",
+    }, ensure_ascii=False)]
+    evs = list(stream_turn(cfg, "x", None, claude=_fake_claude(tmp_path, lines)))
+    assert [e.kind for e in evs] == ["error"]
+    assert evs[0].data["kind"] == "error"
