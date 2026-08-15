@@ -884,3 +884,46 @@ def test_the_documented_json_path_is_not_a_repository_folder():
     assert "승인 없이 쓸 수 있는 임시 폴더" in step3, (
         "3단계가 임시 JSON 을 어디에 써야 하는지 말하지 않습니다"
     )
+
+
+# --- 스킬이 슬롯을 늘릴 줄 안다 --------------------------------------------
+#
+# 실측(첫 실사용): `qatc slot add` 가 SKILL.md 에 **0회** 등장했다. 명령은
+# 있고 동작하는데 스킬이 몰랐다. 그래서 `로그인` 인터뷰에서 화면 인벤토리
+# 전체가 `screen` 슬롯 하나에 들어갔다 — *"1) 로그인 창: 입력 필드 2개…,
+# 누를 수 있는 요소 4개(…"*. 문제는 슬롯 개수 제한이 아니다(그런 코드는
+# 없다). **스킬이 늘릴 줄 몰랐다**는 것이다.
+
+
+def test_skill_knows_how_to_add_a_slot():
+    text = SKILL.read_text(encoding="utf-8")
+    assert "slot add" in text
+    assert "--family" in text
+
+
+def test_skill_family_list_matches_the_code():
+    """스킬이 싣는 계열 이름이 FAMILY_META 와 어긋나면 tc add 가 거부한다.
+
+    `--family` 는 `slot add` 와 `tc add` 양쪽에서 검증된다. 스킬이 목록을
+    실으면서 하나라도 틀리거나 빠뜨리면, 모델은 그 계열을 아예 못 쓰거나
+    (빠짐) 거절당하는 값을 쓴다(틀림) — 둘 다 턴 하나를 버린다. 산문에 박은
+    목록은 코드가 바뀌어도 따라오지 않으므로 여기서 대조한다.
+    """
+    from qatc.knowledge.gate import FAMILY_META
+
+    text = SKILL.read_text(encoding="utf-8")
+    for family in FAMILY_META:
+        assert family in text, f"스킬이 모르는 계열: {family}"
+
+
+def test_skill_says_when_not_to_add_a_slot():
+    """무한정 늘리면 진척 표시가 무의미해진다.
+
+    "늘릴 수 있다" 만 가르치면 모델은 사실이 하나 나올 때마다 슬롯을 만든다.
+    분모가 계속 커져 `8/14` 같은 진척 표시가 아무것도 말해 주지 않게 되고,
+    사용자는 끝이 안 보인다고 느낀다. 그래서 **언제 안 만드는가**가 반드시
+    같이 있어야 한다 — 한쪽만 있는 지시는 지시가 아니다.
+    """
+    text = SKILL.read_text(encoding="utf-8")
+    assert "추가하지 않는" in text, "언제 안 만드는지가 없습니다"
+    assert "분모" in text, "슬롯을 늘리면 무엇이 나빠지는지가 없습니다"
