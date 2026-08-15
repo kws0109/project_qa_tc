@@ -1,9 +1,15 @@
 """창 선택 규칙. 실제 창 없이 전부 검사한다."""
 
+import io
+
 import pytest
+from PIL import Image
 
 from qatc.capture import CaptureError, WindowInfo, select_window
+from qatc.capture import MAX_EDGE, grab_window
 from qatc.profiles import GameProfile
+
+PNG_MAGIC = bytes([137, 80, 78, 71, 13, 10, 26, 10])
 
 
 def _w(handle=1, title="붕괴: 스타레일", process="StarRail.exe",
@@ -15,6 +21,20 @@ def _w(handle=1, title="붕괴: 스타레일", process="StarRail.exe",
 def _p(process="StarRail.exe", title_regex=""):
     return GameProfile(key="starrail", name="붕괴 스타레일",
                        window_process=process, window_title_regex=title_regex)
+
+
+def _img(size=(400, 300), color=(10, 120, 200), noisy=True):
+    """단색이 아닌 그림. `noisy=False` 면 완전 단색(캡처 실패의 모양)."""
+    im = Image.new("RGB", size, color)
+    if noisy:
+        for x in range(0, size[0], 7):
+            for y in range(0, size[1], 5):
+                im.putpixel((x, y), ((x * 7) % 256, (y * 3) % 256, 90))
+    return im
+
+
+def _png_size(raw):
+    return Image.open(io.BytesIO(raw)).size
 
 
 def test_a_profile_without_any_clue_is_refused():
@@ -73,3 +93,66 @@ def test_a_tie_is_broken_by_list_order():
     windows = [_w(handle=5, rect=(0, 0, 100, 100)),
                _w(handle=6, rect=(10, 10, 110, 110))]
     assert select_window(windows, _p()).handle == 5
+
+
+def test_print_window_result_is_used_and_the_screen_is_not_scraped():
+    """가려져 있어도 찍히는 경로다 — 되면 여기서 끝나야 한다."""
+    scraped = []
+    raw = grab_window(_w(), printer=lambda i: _img(),
+                      scraper=lambda i: scraped.append(i) or _img(),
+                      occluded=lambda i: False)
+    assert raw[:8] == PNG_MAGIC
+    assert scraped == [], "PrintWindow 가 됐는데도 화면을 긁었습니다"
+
+
+def test_a_failed_print_window_falls_back_to_the_screen():
+    """실측: 5개 중 1개가 rc=0 이었다. 폴백은 반드시 타는 경로다."""
+    raw = grab_window(_w(), printer=lambda i: None,
+                      scraper=lambda i: _img(size=(320, 240)),
+                      occluded=lambda i: False)
+    assert _png_size(raw) == (320, 240)
+
+
+def test_a_blank_print_window_result_also_falls_back():
+    """rc=1 인데 검은 화면이 나오는 창이 있다 — 반환값만 믿으면 안 된다."""
+    raw = grab_window(_w(), printer=lambda i: _img(noisy=False),
+                      scraper=lambda i: _img(size=(320, 240)),
+                      occluded=lambda i: False)
+    assert _png_size(raw) == (320, 240)
+
+
+def test_an_occluded_window_is_refused_instead_of_scraped():
+    """조용히 브라우저를 찍어 첨부하는 것이 이 기능의 최악의 실패다."""
+    scraped = []
+    with pytest.raises(CaptureError) as e:
+        grab_window(_w(), printer=lambda i: None,
+                    scraper=lambda i: scraped.append(i) or _img(),
+                    occluded=lambda i: True)
+    assert e.value.kind == "occluded"
+    assert scraped == [], "가려져 있는데 화면을 긁었습니다"
+    assert "가려" in e.value.message
+
+
+def test_a_blank_screen_grab_is_reported_as_blank():
+    """가려지지도 않았는데 단색이면 전체화면 배타 모드다 — 다음 조치가 다르다."""
+    with pytest.raises(CaptureError) as e:
+        grab_window(_w(), printer=lambda i: None,
+                    scraper=lambda i: _img(noisy=False),
+                    occluded=lambda i: False)
+    assert e.value.kind == "blank"
+    assert "전체화면" in e.value.message
+
+
+def test_a_huge_capture_is_downscaled():
+    """5120x1440 을 그대로 PNG 로 만들면 첨부 8MB 상한에 부딪힌다."""
+    raw = grab_window(_w(), printer=lambda i: _img(size=(5120, 1440)),
+                      scraper=lambda i: _img(), occluded=lambda i: False)
+    assert _png_size(raw) == (2560, 720), "비율이 유지되지 않았습니다"
+    assert max(_png_size(raw)) == MAX_EDGE
+
+
+def test_a_small_capture_is_left_alone():
+    """작은 창까지 손대면 글자만 흐려진다."""
+    raw = grab_window(_w(), printer=lambda i: _img(size=(800, 600)),
+                      scraper=lambda i: _img(), occluded=lambda i: False)
+    assert _png_size(raw) == (800, 600)

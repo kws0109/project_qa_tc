@@ -12,9 +12,12 @@
 
 from __future__ import annotations
 
+import io
 import re
 from dataclasses import dataclass
 from typing import Sequence
+
+from PIL import Image, ImageGrab
 
 from .profiles import GameProfile
 
@@ -93,4 +96,213 @@ def _matches(window: WindowInfo, profile: GameProfile) -> bool:
     if profile.window_title_regex:
         if not re.search(profile.window_title_regex, window.title):
             return False
+    return True
+
+
+#: 긴 변 상한. 첨부는 한 장 8MB 인데 5120x1440 이나 4K 창을 그대로 PNG 로
+#: 만들면 그 벽에 부딪히고, 사용자에게는 빨간 줄만 보인다. 2560 이면 UI
+#: 글자가 읽히면서 상한 안에 들어온다.
+MAX_EDGE = 2560
+
+#: 단색 판정 문턱. 실측: 성공한 캡처의 최소 고유색이 576, 실패가 1이었다.
+#: 그 사이가 넓어 보수적으로 잡아도 오판이 없다.
+_BLANK_UNIQUE_COLORS = 8
+
+_OCCLUDED_MSG = (
+    "게임 창이 다른 창에 가려져 있습니다. "
+    "게임 창을 앞으로 꺼내거나 서로 겹치지 않게 놓고 다시 눌러 주세요."
+)
+_BLANK_MSG = (
+    "게임 화면을 읽지 못했습니다(빈 화면). "
+    "전체화면 배타 모드는 캡처되지 않습니다 - 테두리 없는 창 모드로 바꾸거나, "
+    "Win+Shift+S 로 찍어 채팅창에 붙여넣어 주세요."
+)
+
+
+def _is_blank(img: Image.Image) -> bool:
+    """캡처가 사실상 아무것도 못 담았는지. 축소본의 고유색으로 본다."""
+    small = img.convert("RGB").resize((160, 90))
+    colors = small.getcolors(maxcolors=160 * 90)
+    return colors is not None and len(colors) <= _BLANK_UNIQUE_COLORS
+
+
+def _fit(img: Image.Image) -> Image.Image:
+    """긴 변이 `MAX_EDGE` 를 넘으면 비율을 유지해 줄인다."""
+    width, height = img.size
+    longest = max(width, height)
+    if longest <= MAX_EDGE:
+        return img
+    scale = MAX_EDGE / longest
+    return img.resize((max(1, round(width * scale)), max(1, round(height * scale))))
+
+
+def _to_png(img: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def grab_window(info: WindowInfo, *, printer=None, scraper=None, occluded=None) -> bytes:
+    """창 하나를 찍어 PNG 바이트로 돌려준다.
+
+    `printer`/`scraper`/`occluded` 는 테스트가 갈아끼우는 이음매다. 기본값은
+    진짜 OS 함수이며, 이 셋을 주입할 수 있어야 결정 트리 전체를 실제 창 없이
+    검사할 수 있다.
+    """
+    printer = printer or _print_window
+    scraper = scraper or _screen_grab
+    occluded = occluded or _is_occluded
+
+    shot = printer(info)
+    if shot is not None and not _is_blank(shot):
+        return _to_png(_fit(shot))
+
+    # 여기서 곧바로 스크랩하면 **가려진 경우 가린 창을 찍어 첨부한다.**
+    # 사용자는 게임을 보냈다고 믿는다 - 이 기능의 최악의 실패 모양이다.
+    if occluded(info):
+        raise CaptureError("occluded", _OCCLUDED_MSG)
+
+    shot = scraper(info)
+    if _is_blank(shot):
+        raise CaptureError("blank", _BLANK_MSG)
+    return _to_png(_fit(shot))
+
+
+import ctypes
+from ctypes import wintypes
+
+_PW_RENDERFULLCONTENT = 0x00000002
+_dpi_ready = False
+
+
+def _ensure_dpi_aware() -> None:
+    """`SetProcessDPIAware` 를 첫 캡처 때 한 번만 부른다.
+
+    안 부르면 `GetWindowRect` 가 논리 픽셀을 돌려줘 125% 배율에서 오른쪽·아래가
+    잘린다. 이 호출은 **프로세스 전역이고 되돌릴 수 없으므로** import 시점이
+    아니라 여기서 부른다 - 캡처를 한 번도 안 쓰는 실행(테스트 스위트 전체가
+    그렇다)의 전역 상태를 바꾸지 않기 위해서다.
+    """
+    global _dpi_ready
+    if _dpi_ready:
+        return
+    ctypes.windll.user32.SetProcessDPIAware()
+    _dpi_ready = True
+
+
+def _process_name(hwnd: int) -> str:
+    """창을 소유한 프로세스의 실행 파일 이름. 못 얻으면 빈 문자열."""
+    pid = wintypes.DWORD()
+    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    handle = ctypes.windll.kernel32.OpenProcess(0x0400 | 0x0010, False, pid)
+    if not handle:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(260)
+        got = ctypes.windll.psapi.GetModuleBaseNameW(handle, None, buf, 260)
+        return buf.value if got else ""
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def list_windows() -> list[WindowInfo]:
+    """지금 보이는 창 목록. 제목이 없는 창은 뺀다(작업표시줄 등 껍데기)."""
+    _ensure_dpi_aware()
+    user32 = ctypes.windll.user32
+    out: list[WindowInfo] = []
+    proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def visit(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length == 0:
+            return True
+        title = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, title, length + 1)
+        rect = wintypes.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        out.append(WindowInfo(
+            handle=int(hwnd),
+            title=title.value,
+            process=_process_name(hwnd),
+            rect=(rect.left, rect.top, rect.right, rect.bottom),
+            minimized=bool(user32.IsIconic(hwnd)),
+        ))
+        return True
+
+    user32.EnumWindows(proc_type(visit), 0)
+    return out
+
+
+class _BitmapInfoHeader(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
+        ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
+        ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
+        ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    ]
+
+
+def _print_window(info: WindowInfo):
+    """창 자신에게 자기 내용을 그리게 한다. 실패하면 `None`.
+
+    가려져 있어도 찍히는 것이 이 경로의 값이다. 가속 렌더링 창(일부 게임)은
+    rc=0 이거나 검은 화면을 돌려준다 - 호출자가 그걸 보고 폴백한다.
+    """
+    _ensure_dpi_aware()
+    user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+    left, top, right, bottom = info.rect
+    width, height = right - left, bottom - top
+    if width <= 0 or height <= 0:
+        return None
+
+    window_dc = user32.GetWindowDC(info.handle)
+    memory_dc = gdi32.CreateCompatibleDC(window_dc)
+    bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
+    gdi32.SelectObject(memory_dc, bitmap)
+    try:
+        if not user32.PrintWindow(info.handle, memory_dc, _PW_RENDERFULLCONTENT):
+            return None
+        header = _BitmapInfoHeader()
+        header.biSize = ctypes.sizeof(_BitmapInfoHeader)
+        header.biWidth = width
+        header.biHeight = -height          # 음수 = 위에서 아래로
+        header.biPlanes = 1
+        header.biBitCount = 32
+        header.biCompression = 0
+        buf = ctypes.create_string_buffer(width * height * 4)
+        gdi32.GetDIBits(memory_dc, bitmap, 0, height, buf, ctypes.byref(header), 0)
+        return Image.frombuffer("RGBA", (width, height), buf, "raw", "BGRA", 0, 1)
+    finally:
+        gdi32.DeleteObject(bitmap)
+        gdi32.DeleteDC(memory_dc)
+        user32.ReleaseDC(info.handle, window_dc)
+
+
+def _screen_grab(info: WindowInfo) -> Image.Image:
+    """창 사각형 영역의 **화면**을 긁는다. 가려져 있으면 가린 것이 찍힌다."""
+    _ensure_dpi_aware()
+    return ImageGrab.grab(bbox=info.rect, all_screens=True)
+
+
+def _is_occluded(info: WindowInfo) -> bool:
+    """창 사각형 안 9개 지점에서 최상위 창이 대상인지 본다.
+
+    한 점만 보면 투명 영역·둥근 모서리에서 오판한다. `WindowFromPoint` 는
+    자식 컨트롤을 돌려주므로 `GetAncestor(GA_ROOT)` 로 루트까지 올라가 비교한다.
+    """
+    _ensure_dpi_aware()
+    user32 = ctypes.windll.user32
+    left, top, right, bottom = info.rect
+    for n in (1, 2, 3):
+        for m in (1, 2, 3):
+            x = left + (right - left) * n // 4
+            y = top + (bottom - top) * m // 4
+            hit = user32.WindowFromPoint(wintypes.POINT(x, y))
+            root = user32.GetAncestor(hit, 2)      # GA_ROOT
+            if int(root or 0) == info.handle:
+                return False        # 한 점이라도 보이면 가려지지 않은 것
     return True
