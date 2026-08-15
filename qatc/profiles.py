@@ -1,13 +1,12 @@
 """게임 프로파일 — 게임 식별 정보.
 
 지식 저장소는 게임 키(예: "starrail")로 나뉘고, 그 정체성이 여기 있다.
-``qatc config`` 가 사용 가능한 프로파일 목록을 보여줄 때 이 모듈을 쓴다
-(``key`` 와 ``name`` 만 읽는다).
+``qatc config`` 가 사용 가능한 프로파일 목록을 보여줄 때 이 모듈을 쓴다.
+창 캡처는 ``window.process`` / ``window.title_regex`` 를 이 모듈에서 읽는다.
 
-창 탐색·캡처 ROI·무시 영역·입력 해석 규칙 등은 녹화 파이프라인 전용
-필드였으나 파이프라인 자체가 삭제되어 더 이상 코드에서 읽지 않는다.
-``profiles/*.yaml`` 파일에는 과거 값이 그대로 남아 있을 수 있지만, 아래
-로더는 ``name`` 외의 키를 읽지 않는다.
+캡처 ROI·무시 영역·입력 해석 규칙 등은 녹화 파이프라인 전용 필드였고
+파이프라인 자체가 삭제되어 여전히 코드에서 읽지 않는다. ``profiles/*.yaml``
+파일에는 과거 값이 그대로 남아 있을 수 있다.
 """
 
 from __future__ import annotations
@@ -25,10 +24,24 @@ from .console import _warn
 class GameProfile:
     key: str    # 파일명 기반 식별자 (예: "genshin")
     name: str   # 표시 이름 (예: "원신")
+    #: 창을 찾는 두 단서. 없으면 빈 문자열 — 그 게임은 캡처를 쓸 수 없다.
+    window_process: str = ""
+    window_title_regex: str = ""
 
     @classmethod
     def from_dict(cls, key: str, d: dict[str, Any]) -> GameProfile:
-        return cls(key=key, name=d.get("name", key))
+        window = d.get("window")
+        if not isinstance(window, dict):
+            # 매핑이 아니면(리스트·문자열·None) 단서가 없는 것으로 본다.
+            # 여기서 터지면 파일 하나가 모든 게임의 명령을 죽인다 — 최상위
+            # 매핑을 검사하는 것과 같은 이유다.
+            window = {}
+        return cls(
+            key=key,
+            name=d.get("name", key),
+            window_process=str(window.get("process") or ""),
+            window_title_regex=str(window.get("title_regex") or ""),
+        )
 
     @classmethod
     def load(cls, path: Path | str) -> GameProfile:

@@ -1,10 +1,9 @@
 name: 명조 (Wuthering Waves)
 
-# ── 아래는 현재 코드에서 읽지 않는다 ─────────────────────────────────────
-# 녹화 파이프라인 삭제 이후 qatc/profiles.py 의 GameProfile 은 name 만
-# 읽는다. window/capture_roi/static_ignore/key_hints/input 은 캡처·입력
-# 해석 전용이라 지금은 완전히 죽은 값이지만, llm_context 는 실측으로 얻은
-# 게임 UI 구조·용어 지식이라 재수집 비용이 커서 지우지 않고 남겨 둔다 —
+# ── 아래 필드 중 일부는 현재 코드에서 읽지 않는다 ──────────────────────────
+# window 는 창 캡처가 읽는다. capture_roi/static_ignore/key_hints/input 은
+# 녹화 파이프라인 삭제 이후 여전히 읽지 않는 값이지만, llm_context 는 실측으로
+# 얻은 게임 UI 구조·용어 지식이라 재수집 비용이 커서 지우지 않고 남겨 둔다 —
 # 인터뷰 스킬에 게임 맥락을 주입하는 기능이 생기면 여기서 가져다 쓸 수 있다.
 window:
   title_regex: "^(鸣潮|Wuthering Waves|명조)"

@@ -15,11 +15,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from qatc.cli import main
-from qatc.profiles import load_profiles
+from qatc.profiles import GameProfile, load_profiles
 
+ROOT = Path(__file__).resolve().parents[1]
 
 #: 문법은 맞지만 최상위가 매핑이 아닌 것들. 사람이 실제로 만드는 형태다.
 #:
@@ -123,3 +126,41 @@ def test_a_stray_note_file_still_leaves_typo_rejection_working(cfg_env, capsys, 
     out = capsys.readouterr().out
     assert "등록된 게임이 아닙니다" in out
     assert "starrail" in out and "genshin" in out
+
+
+def test_profile_reads_the_window_process_from_disk():
+    """실제 프로파일 파일과 대조한다.
+
+    산문이 아니라 파일에서 읽으므로, 누가 `window` 블록을 지우면 여기서 걸린다.
+    """
+    p = GameProfile.load(ROOT / "profiles" / "starrail.yaml")
+    assert p.window_process == "StarRail.exe"
+    assert "Star Rail" in p.window_title_regex
+
+
+def test_a_profile_without_a_window_block_is_not_an_error(tmp_path):
+    """`window` 가 없는 프로파일도 있다 — 그때는 빈 문자열이지 예외가 아니다."""
+    f = tmp_path / "x.yaml"
+    f.write_text("name: 이름만 있는 게임", encoding="utf-8")
+    p = GameProfile.load(f)
+    assert p.window_process == ""
+    assert p.window_title_regex == ""
+
+
+def test_a_malformed_window_block_does_not_kill_the_loader(tmp_path):
+    """`window` 가 매핑이 아니면(리스트·문자열) 그 파일 하나가 모든 게임을 죽인다.
+
+    최상위 매핑 검사와 같은 이유다 — 여기도 방어한다.
+    """
+    f = tmp_path / "y.yaml"
+    f.write_text("name: 게임" + chr(10) + "window: 이건 매핑이 아니다", encoding="utf-8")
+    p = GameProfile.load(f)
+    assert p.window_process == ""
+
+
+def test_every_bundled_profile_still_loads():
+    """네 게임 전부 로드되는지 — 주석을 고치다 YAML 을 깨뜨리는 것을 잡는다."""
+    files = sorted((ROOT / "profiles").glob("*.yaml"))
+    assert len(files) >= 4
+    for f in files:
+        assert GameProfile.load(f).name
