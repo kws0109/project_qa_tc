@@ -927,3 +927,33 @@ def test_skill_says_when_not_to_add_a_slot():
     text = SKILL.read_text(encoding="utf-8")
     assert "추가하지 않는" in text, "언제 안 만드는지가 없습니다"
     assert "분모" in text, "슬롯을 늘리면 무엇이 나빠지는지가 없습니다"
+
+
+def test_skill_teaches_the_three_level_hierarchy():
+    text = SKILL.read_text(encoding="utf-8")
+    for token in ("중분류", "소분류", "middle", "sub"):
+        assert token in text, f"스킬이 {token} 를 모릅니다"
+
+
+def test_skill_says_not_to_put_the_result_in_the_sub():
+    """소분류에 결과를 적으면 길어지고 자매 케이스가 안 보인다."""
+    text = SKILL.read_text(encoding="utf-8")
+    assert "기대결과" in text and "소분류" in text
+    assert "비밀번호 불일치" in text, "좋은 예가 없습니다"
+
+
+def test_skill_carries_both_split_examples():
+    """규칙 1·2 는 코드가 못 세므로 예시가 유일한 가르침이다.
+
+    나누는 예(독립된 결과)와 합치는 예(연속·종속) **둘 다** 있어야 한다 —
+    한쪽만 있으면 모델이 한 방향으로만 치우친다.
+    """
+    text = SKILL.read_text(encoding="utf-8")
+    assert "회원가입" in text and "이메일" in text        # 나누는 예
+    assert "환영" in text or "메인 페이지" in text        # 합치는 예
+
+
+def test_skill_knows_the_content_code():
+    text = SKILL.read_text(encoding="utf-8")
+    assert "--code" in text
+    assert "LOGIN" in text
