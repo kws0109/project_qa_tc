@@ -936,10 +936,20 @@ def test_skill_teaches_the_three_level_hierarchy():
 
 
 def test_skill_says_not_to_put_the_result_in_the_sub():
-    """소분류에 결과를 적으면 길어지고 자매 케이스가 안 보인다."""
+    """소분류에 결과를 적으면 길어지고 자매 케이스가 안 보인다.
+
+    **"비밀번호 불일치"만으로는 좋은 예가 있는지 확인할 수 없다.** 나쁜 예
+    `비밀번호 불일치 시 연동하기 버튼 비활성 유지` 자체가 그 문자열을
+    부분 문자열로 포함하므로, 좋은 예를 통째로 지워도 이 부분 문자열은
+    나쁜 예를 통해 여전히 남는다(실측: M26 이 이 어서션을 죽이지 못했다).
+    좋은 예는 백틱으로 감싸 적으므로(`` `비밀번호 불일치` ``), 닫는 백틱이
+    "불일치" 바로 뒤에 오는 형태는 좋은 예에서만 나온다 — 나쁜 예는
+    "불일치 시 …" 로 이어지다 닫혀 백틱이 바로 붙지 않는다. 그 형태를
+    통째로 확인해야 좋은 예가 사라지면 실패한다.
+    """
     text = SKILL.read_text(encoding="utf-8")
     assert "기대결과" in text and "소분류" in text
-    assert "비밀번호 불일치" in text, "좋은 예가 없습니다"
+    assert "`비밀번호 불일치`" in text, "좋은 예(`비밀번호 불일치`)가 없습니다"
 
 
 def test_skill_carries_both_split_examples():
@@ -947,10 +957,20 @@ def test_skill_carries_both_split_examples():
 
     나누는 예(독립된 결과)와 합치는 예(연속·종속) **둘 다** 있어야 한다 —
     한쪽만 있으면 모델이 한 방향으로만 치우친다.
+
+    **"환영"으로 합치는 예를 확인하면 안 된다.** 나누는 예 자체가 "환영
+    이메일 발송"을 포함하므로, 합치는 예를 통째로 지워도 "환영"은 나누는
+    예를 통해 텍스트에 남아 `or` 검사를 속인다(실측: M25 가 이 어서션을
+    죽이지 못했다). 각 예시에만 등장하는 문자열을 `and`로 따로 확인해야,
+    실패 메시지가 어느 방향이 사라졌는지 정확히 말해준다.
     """
     text = SKILL.read_text(encoding="utf-8")
-    assert "회원가입" in text and "이메일" in text        # 나누는 예
-    assert "환영" in text or "메인 페이지" in text        # 합치는 예
+    assert "회원가입" in text and "이메일" in text, (
+        "나누는 예(회원가입 -> DB 저장 / 환영 이메일 발송)가 없습니다"
+    )
+    assert "메인 페이지" in text, (
+        "합치는 예(로그인 성공 -> 메인 페이지로 이동)가 없습니다"
+    )
 
 
 def test_skill_knows_the_content_code():
