@@ -194,12 +194,35 @@ def cmd_slot_init(args: argparse.Namespace, cfg: AppConfig) -> int:
            "'qatc slot init <컨텐츠> --game <게임>' 처럼 이름을 지정하세요.")
         return 1
 
+    # 코드 검증 순서가 중요하다 — 형식을 먼저 보고(DB 를 열 필요조차 없다),
+    # 그 다음 기존 코드와의 충돌, 마지막으로 다른 컨텐츠와의 중복이다. 형식이
+    # 틀린 코드로 충돌·중복부터 이야기하면 사용자는 "어느 것부터 고쳐야
+    # 하는지" 다시 추론해야 한다.
+    if args.code and not re.fullmatch(r"[A-Z0-9]{2,12}", args.code):
+        _p("오류: 컨텐츠 코드는 영문 대문자와 숫자 2~12자여야 합니다 (예: LOGIN). "
+           "다시 지정해 주세요.")
+        return 1
+
     game = resolve_game(cfg, args.game)
 
     types = [t.strip() for t in (args.types or "").split(",") if t.strip()]
     store = KnowledgeStore(cfg.knowledge_path / f"{game}.db").open()
     try:
-        content = store.init_content(args.content, game=game, types=types)
+        if args.code:
+            existing_code = store.content_code(args.content)
+            if existing_code and existing_code != args.code:
+                # 재실행이 코드를 덮으면 이미 발급된 TC ID(`TC_<코드>_<번호>`)가
+                # 가리키는 컨텐츠가 바뀐다 — 인용된 ID 가 죽는다.
+                _p(f"오류: '{args.content}'의 코드는 이미 발급된 '{existing_code}'라 "
+                   f"바꿀 수 없습니다 (요청한 코드: '{args.code}').")
+                return 1
+            owner = store.codes_in_use().get(args.code)
+            if owner and owner != args.content:
+                _p(f"오류: 코드 {args.code}는 이미 '{owner}'가 쓰고 있습니다. "
+                   f"다른 약어를 지정하세요.")
+                return 1
+
+        content = store.init_content(args.content, game=game, types=types, code=args.code)
         n = len(store.slots(args.content))
     except ValueError as exc:
         _p(f"오류: {exc}")
@@ -609,6 +632,8 @@ def register(sub) -> None:
     it.add_argument("--game", "-g")
     it.add_argument("--types", "-t", default="",
                     help=f"쉼표 구분. 사용 가능: {', '.join(KNOWN_TYPES)}")
+    it.add_argument("--code", default="",
+                    help="TC ID에 쓸 영문 대문자 약어 (예: LOGIN). 새 컨텐츠에는 필수")
     it.set_defaults(func=cmd_slot_init)
 
     se = slot_sub.add_parser("set", help="슬롯 값 기록")

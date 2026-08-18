@@ -27,7 +27,7 @@ def _tc(title="TC", family="정상 경로"):
 
 def _seed(cfg, game="starrail", name="파티편성"):
     with KnowledgeStore(cfg.knowledge_path / f"{game}.db") as st:
-        st.init_content(name, game=game, types=["편성"])
+        st.init_content(name, game=game, types=["편성"], code="PARTY")
         st.set_slot(name, "core_action", SlotStatus.FILLED, "파티를 편성한다")
         st.set_slot(name, "cost", SlotStatus.UNKNOWN)
         st.add_testcase(name, "정상 경로", _tc(), ["core_action"])
@@ -243,7 +243,7 @@ def test_testcase_meta_scopes_to_requested_content(cfg):
     name = _seed(cfg)
     other = "무기강화"
     with KnowledgeStore(cfg.knowledge_path / "starrail.db") as st:
-        st.init_content(other, game="starrail", types=[])
+        st.init_content(other, game="starrail", types=[], code="WEAPON")
         st.set_slot(other, "core_action", SlotStatus.FILLED, "무기를 강화한다")
         st.add_testcase(other, "정상 경로", _tc(title="다른 컨텐츠 TC"), ["core_action"])
         own_ids = {tc.id for tc in st.testcases(name)}

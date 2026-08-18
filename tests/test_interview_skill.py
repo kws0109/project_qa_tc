@@ -832,7 +832,7 @@ def test_the_documented_tc_add_command_actually_runs(cfg_env, capsys, tmp_path):
     payload = _fenced_block(text, "json", after="계열마다 한 번씩 실행한다")
     cmdline = next(i for i in _executed_invocations(text) if " tc add " in i)
 
-    assert main(["slot", "init", "파티편성", "--game", "starrail"]) == 0
+    assert main(["slot", "init", "파티편성", "--game", "starrail", "--code", "PARTY"]) == 0
     assert main(["slot", "set", "파티편성", "core_action",
                  "--status", "filled", "--value", "파티를 편성한다"]) == 0
     capsys.readouterr()

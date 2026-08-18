@@ -530,3 +530,34 @@ def test_blank_content_is_rejected_before_the_game_is_resolved(cfg_env, capsys):
     assert rc == 1
     assert "이름이 비어" in out
     assert "등록된 게임이 아닙니다" not in out
+
+
+# --- 컨텐츠 코드 (`--code`) ------------------------------------------------
+
+
+def test_slot_init_takes_a_code(cfg_env, capsys):
+    from qatc.knowledge.store import KnowledgeStore
+
+    assert main(["slot", "init", "로그인", "--game", "starrail", "--code", "LOGIN"]) == 0
+    with KnowledgeStore(cfg_env / "starrail.db") as st:
+        assert st.content_code("로그인") == "LOGIN"
+
+
+def test_a_lowercase_or_symbolic_code_is_refused(cfg_env, capsys):
+    rc = main(["slot", "init", "로그인", "--game", "starrail", "--code", "log-in"])
+    assert rc == 1
+    assert "영문 대문자" in capsys.readouterr().out
+
+
+def test_a_duplicate_code_in_the_same_game_is_refused(cfg_env, capsys):
+    main(["slot", "init", "로그인", "--game", "starrail", "--code", "LOGIN"])
+    rc = main(["slot", "init", "로그인보상", "--game", "starrail", "--code", "LOGIN"])
+    assert rc == 1
+    assert "이미" in capsys.readouterr().out
+
+
+def test_changing_the_code_of_an_existing_content_is_refused(cfg_env, capsys):
+    main(["slot", "init", "로그인", "--game", "starrail", "--code", "LOGIN"])
+    rc = main(["slot", "init", "로그인", "--game", "starrail", "--code", "SIGNIN"])
+    assert rc == 1
+    assert "이미 발급" in capsys.readouterr().out

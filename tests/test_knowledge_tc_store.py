@@ -7,7 +7,7 @@ from qatc.models import Priority, TCOrigin
 @pytest.fixture()
 def store(tmp_path):
     with KnowledgeStore(tmp_path / "starrail.db") as s:
-        s.init_content("파티편성", game="starrail", types=[])
+        s.init_content("파티편성", game="starrail", types=[], code="PARTY")
         yield s
 
 
@@ -30,7 +30,7 @@ def test_hash_changes_with_expected(make_tc):
 
 def test_add_testcase_assigns_id(make_tc, store):
     got = store.add_testcase("파티편성", "정상 경로", make_tc(), ["core_action"])
-    assert got.id.startswith("tc_")
+    assert got.id == "TC_PARTY_001"
 
 
 def test_add_testcase_preserves_supplied_id(make_tc, store):
@@ -60,7 +60,7 @@ def test_stored_testcases_come_back_with_their_family(tmp_path, make_tc):
     from qatc.knowledge.store import KnowledgeStore
 
     with KnowledgeStore(tmp_path / "g.db") as st:
-        st.init_content("c", game="g", types=[])
+        st.init_content("c", game="g", types=[], code="C1")
         st.add_testcase("c", "경계값", make_tc(title="T"), ["constraints"])
         got = st.testcases("c")
     assert [t.family for t in got] == ["경계값"]

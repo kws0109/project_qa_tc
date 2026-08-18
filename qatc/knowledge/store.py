@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from ..models import TCOrigin, TestCase, new_id
+from ..models import TCOrigin, TestCase
 from .models import Content, Slot, SlotStatus, is_blank
 from .slots import build_slot_set
 
@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS contents (
     name       TEXT PRIMARY KEY,
     game       TEXT NOT NULL,
     types      TEXT NOT NULL DEFAULT '[]',
+    code       TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 
@@ -46,6 +47,11 @@ CREATE TABLE IF NOT EXISTS testcases (
     generated_hash TEXT NOT NULL,
     slot_keys      TEXT NOT NULL DEFAULT '[]',
     row            TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tc_seq (
+    content TEXT PRIMARY KEY,
+    last    INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -86,7 +92,20 @@ class KnowledgeStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        self._ensure_code_column(self._conn)
         return self
+
+    def _ensure_code_column(self, db) -> None:
+        """옛 DB 에 `contents.code` 를 보강한다.
+
+        스키마 문의 `IF NOT EXISTS` 는 테이블이 이미 있으면 아무것도 하지
+        않으므로, 이 컬럼은 영영 생기지 않는다 — 첫 실사용으로 만들어진 DB 가
+        그 경우다.
+        """
+        names = {r["name"] for r in db.execute("PRAGMA table_info(contents)")}
+        if "code" not in names:
+            db.execute("ALTER TABLE contents ADD COLUMN code TEXT NOT NULL DEFAULT ''")
+            db.commit()
 
     def close(self) -> None:
         if self._conn is not None:
@@ -128,11 +147,31 @@ class KnowledgeStore:
             )
         ]
 
-    def init_content(self, name: str, game: str, types: Sequence[str]) -> Content:
+    def content_code(self, name: str) -> str:
+        row = self._db().execute(
+            "SELECT code FROM contents WHERE name = ?", (name,)).fetchone()
+        return row["code"] if row else ""
+
+    def set_content_code(self, name: str, code: str) -> None:
+        db = self._db()
+        db.execute("UPDATE contents SET code = ? WHERE name = ?", (code, name))
+        db.commit()
+
+    def codes_in_use(self) -> dict[str, str]:
+        """코드 -> 컨텐츠 이름. 중복 판정에 쓴다."""
+        return {r["code"]: r["name"] for r in self._db().execute(
+            "SELECT code, name FROM contents WHERE code != ''")}
+
+    def init_content(self, name: str, game: str, types: Sequence[str], code: str = "") -> Content:
         """컨텐츠를 만들거나, 이미 있으면 새 유형의 슬롯만 덧붙인다.
 
         **기존 슬롯의 값과 상태는 절대 건드리지 않는다.** 재실행이 사용자가 채운
         내용을 지우면 아무도 다시 실행하지 않는다.
+
+        `code` 는 TC ID 접두어다. 이미 코드가 있으면 재실행이 덮지 않는다 —
+        덮으면 이미 발급된 ID(`TC_<코드>_<번호>`)와 어긋난다. `code` 는 여기서는
+        선택值이다 — 컨텐츠를 만드는 것과 TC ID 를 발급하는 것은 다른 결정이라,
+        코드 없는 컨텐츠도 만들 수 있어야 한다 (거절은 `_next_tc_id` 쪽 몫이다).
         """
         db = self._db()
         existing = self.get_content(name)
@@ -141,8 +180,8 @@ class KnowledgeStore:
 
         if existing is None:
             db.execute(
-                "INSERT INTO contents (name, game, types, created_at) VALUES (?, ?, ?, ?)",
-                (name, game, json.dumps(merged, ensure_ascii=False),
+                "INSERT INTO contents (name, game, types, code, created_at) VALUES (?, ?, ?, ?, ?)",
+                (name, game, json.dumps(merged, ensure_ascii=False), code,
                  datetime.now(timezone.utc).isoformat()),
             )
         else:
@@ -150,6 +189,8 @@ class KnowledgeStore:
                 "UPDATE contents SET types = ? WHERE name = ?",
                 (json.dumps(merged, ensure_ascii=False), name),
             )
+            if code and not self.content_code(name):
+                self.set_content_code(name, code)
 
         have = {r["key"] for r in db.execute(
             "SELECT key FROM slots WHERE content = ?", (name,)
@@ -244,12 +285,33 @@ class KnowledgeStore:
 
     # -- 테스트케이스 ------------------------------------------------
 
+    def _next_tc_id(self, content: str) -> str:
+        """`TC_<코드>_<번호>`. 번호는 컨텐츠 안에서 단조 증가하고 재사용하지 않는다.
+
+        살아 있는 행의 최대값을 쓰지 않는 이유: 전부 지운 뒤 새로 만들면 001
+        로 되돌아가, 지워진 TC 를 가리키던 번호가 다른 TC 를 가리키게 된다.
+        그래서 마지막 번호를 `tc_seq` 에 따로 기억한다.
+        """
+        code = self.content_code(content)
+        if not code:
+            raise KeyError(
+                f"'{content}'에 컨텐츠 코드가 없어 TC ID를 만들 수 없습니다. "
+                f"'qatc slot init {content} --code <영문대문자약어>' 로 먼저 정하세요."
+            )
+        db = self._db()
+        row = db.execute("SELECT last FROM tc_seq WHERE content = ?", (content,)).fetchone()
+        nxt = (row["last"] if row else 0) + 1
+        db.execute("INSERT OR REPLACE INTO tc_seq (content, last) VALUES (?, ?)",
+                   (content, nxt))
+        db.commit()
+        return f"TC_{code}_{nxt:03d}"
+
     def add_testcase(
         self, content: str, family: str, tc: TestCase, slot_keys: Sequence[str]
     ) -> TestCase:
         """TC를 저장한다. `id` 가 비어 있으면 부여한다."""
         if not tc.id:
-            tc.id = new_id("tc")
+            tc.id = self._next_tc_id(content)
         self._db().execute(
             "INSERT OR REPLACE INTO testcases"
             " (id, content, family, generated_hash, slot_keys, row)"
@@ -339,22 +401,36 @@ class KnowledgeStore:
         :returns: (추가한 수, 보존한 수, 지운 수)
         """
         db = self._db()
-        kept = 0
-        deleted = 0
-        for r in db.execute(
+        rows = db.execute(
             "SELECT id, generated_hash, row FROM testcases WHERE content = ? AND family = ?",
             (content, family),
-        ).fetchall():
+        ).fetchall()
+
+        # 같은 (중분류, 소분류) 면 같은 TC 로 본다 - 본문을 다시 써도 번호를
+        # 물려주기 위해서다. 소분류가 케이스 이름이 되면서 가능해진 대조다.
+        inherited: dict[tuple[str, str], str] = {}
+        for r in rows:
+            old = TestCase.from_row(json.loads(r["row"]))
+            inherited[(old.category_minor, old.category_sub)] = r["id"]
+
+        kept = 0
+        deleted = 0
+        for r in rows:
             tc = TestCase.from_row(json.loads(r["row"]))
             edited = testcase_hash(tc) != r["generated_hash"]
             if tc.origin is TCOrigin.USER or edited:
                 kept += 1
+                # 이 TC 는 아직 살아 있다 — 번호를 새 배치에 물려주면 두 TC 가
+                # 같은 id 를 갖게 된다. 물려줄 후보에서 뺀다.
+                inherited.pop((tc.category_minor, tc.category_sub), None)
                 continue
             db.execute("DELETE FROM testcases WHERE id = ?", (r["id"],))
             deleted += 1
         db.commit()
 
         for tc in cases:
+            if not tc.id:
+                tc.id = inherited.get((tc.category_minor, tc.category_sub), "")
             self.add_testcase(content, family, tc, slot_keys)
         return len(cases), kept, deleted
 

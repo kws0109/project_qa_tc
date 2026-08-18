@@ -9,7 +9,7 @@ from qatc.knowledge.store import KnowledgeStore
 
 @pytest.fixture()
 def ready(cfg_env):
-    main(["slot", "init", "파티편성", "--game", "starrail"])
+    main(["slot", "init", "파티편성", "--game", "starrail", "--code", "PARTY"])
     main(["slot", "set", "파티편성", "core_action", "--status", "filled",
           "--value", "파티를 짜고 적용한다"])
     return cfg_env

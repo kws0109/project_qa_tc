@@ -19,7 +19,7 @@ def app(tmp_path):
     cfg = AppConfig(knowledge_root=str(tmp_path / "k"),
                     profiles_dir=str(tmp_path / "p"))
     with KnowledgeStore(cfg.knowledge_path / "starrail.db") as st:
-        st.init_content("파티편성", game="starrail", types=["편성"])
+        st.init_content("파티편성", game="starrail", types=["편성"], code="PARTY")
         st.set_slot("파티편성", "core_action", SlotStatus.FILLED, "편성한다")
     a = create_app(cfg)
     a.config["TESTING"] = True

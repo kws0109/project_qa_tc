@@ -8,14 +8,9 @@
 from __future__ import annotations
 
 import json
-import uuid
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
-
-
-def new_id(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex[:10]}"
 
 
 # ---------------------------------------------------------------- TC 계층

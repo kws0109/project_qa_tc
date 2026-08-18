@@ -218,3 +218,94 @@ def test_set_slot_still_accepts_invisible_value_for_non_filled_statuses(store, v
     for status in (SlotStatus.UNKNOWN, SlotStatus.NA, SlotStatus.EMPTY):
         slot = store.set_slot("파티편성", "core_action", status, value)
         assert slot.status is status
+
+
+# --- 컨텐츠 코드와 TC ID ---------------------------------------------------
+
+
+def test_content_code_is_stored_and_returned(tmp_path):
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("로그인", game="g", types=[], code="LOGIN")
+        assert st.content_code("로그인") == "LOGIN"
+
+
+def test_a_second_init_without_a_code_keeps_the_existing_one(tmp_path):
+    """`slot init` 재실행은 유형만 덧붙이는 기존 용법이 그대로 살아야 한다."""
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("로그인", game="g", types=[], code="LOGIN")
+        st.init_content("로그인", game="g", types=["편성"])
+        assert st.content_code("로그인") == "LOGIN"
+
+
+def test_testcase_ids_follow_the_code_and_increase(tmp_path, make_tc):
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("로그인", game="g", types=[], code="LOGIN")
+        for n in range(3):
+            tc = make_tc(title=f"T{n}")
+            tc.category_sub = f"케이스{n}"
+            st.add_testcase("로그인", "경계값", tc, ["constraints"])
+        got = sorted(t.id for t in st.testcases("로그인"))
+    assert got == ["TC_LOGIN_001", "TC_LOGIN_002", "TC_LOGIN_003"]
+
+
+def test_a_number_is_never_reused_after_a_delete(tmp_path, make_tc):
+    """지워진 번호를 다시 쓰면 버그 리포트가 가리키던 번호가 엉뚱한 TC 를
+    가리킨다. 비워 두는 편이 옳다."""
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("로그인", game="g", types=[], code="LOGIN")
+        for n in range(2):
+            tc = make_tc(title=f"T{n}")
+            tc.category_sub = f"케이스{n}"
+            st.add_testcase("로그인", "경계값", tc, ["constraints"])
+        st.replace_generated("로그인", "경계값", [], ["constraints"])
+        fresh = make_tc(title="새것")
+        fresh.category_sub = "새 케이스"
+        st.add_testcase("로그인", "경계값", fresh, ["constraints"])
+        assert [t.id for t in st.testcases("로그인")] == ["TC_LOGIN_003"]
+
+
+def test_the_same_case_keeps_its_number_across_a_regeneration(tmp_path, make_tc):
+    """같은 `(중분류, 소분류)` 면 같은 TC 로 보고 번호를 물려준다.
+
+    소분류가 케이스 이름이 되면서 이 대조가 가능해졌다. 이것이 없으면 한
+    계열을 다시 만들 때마다 그 계열의 모든 ID 가 갈린다.
+    """
+    def case(text):
+        tc = make_tc(title=text)
+        tc.category_minor, tc.category_sub = "신규 계정 연동", "비밀번호 불일치"
+        return tc
+
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("로그인", game="g", types=[], code="LOGIN")
+        st.add_testcase("로그인", "경계값", case("처음"), ["constraints"])
+        first = st.testcases("로그인")[0].id
+        st.replace_generated("로그인", "경계값", [case("다시 쓴 본문")], ["constraints"])
+        assert [t.id for t in st.testcases("로그인")] == [first]
+
+
+def test_adding_a_testcase_without_a_code_is_refused(tmp_path, make_tc):
+    """코드가 없으면 ID 를 지어내지 않고 거절한다 — `TC_C01_001` 같은 기계
+    이름보다 다음 조치가 적힌 오류가 낫다."""
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("로그인", game="g", types=[])
+        with pytest.raises(KeyError) as e:
+            st.add_testcase("로그인", "경계값", make_tc(), ["constraints"])
+    assert "--code" in str(e.value.args[0])
+
+
+def test_an_old_database_without_the_code_column_still_opens(tmp_path):
+    """첫 실사용으로 만들어진 DB 에는 `contents.code` 가 없다."""
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE contents (name TEXT PRIMARY KEY, game TEXT NOT NULL,"
+                " types TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL)")
+    con.execute("INSERT INTO contents VALUES ('로그인','g','[]','2026-01-01')")
+    con.commit()
+    con.close()
+
+    with KnowledgeStore(path) as st:
+        assert st.content_code("로그인") == ""
+        st.set_content_code("로그인", "LOGIN")
+        assert st.content_code("로그인") == "LOGIN"
