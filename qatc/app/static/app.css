@@ -490,7 +490,9 @@ button, textarea, input {
 
 .tc-title { font-size: 1.05rem; margin: 4px 0 8px; }
 
-/* 중분류(화면 이름)는 옅게, 소분류(케이스 이름)는 진하게 — 계층을 한눈에. */
+/* `renderReview` 가 `중분류 › 소분류` 를 span 없이 문자열 한 줄로 넣는다 —
+   구분자 자체가 계층 경계를 이미 보여줘서 두 색으로 나눌 필요가 없었다.
+   `.tc-title` 와 같은 크기·여백만 그대로 물려받는다. */
 .tc-path { font-size: 1.05rem; margin: 4px 0 8px; color: var(--text); }
 
 .tc-meta { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
