@@ -339,17 +339,26 @@ def _read_json_arg(source: str) -> dict:
 
 
 #: `tc add` 항목에서 반드시 있어야 하는 필드.
-_REQUIRED_FIELDS = ("title", "steps", "expected")
+#: `title` 은 더 이상 읽지 않는다 — 대분류/중분류/소분류로 무슨 TC인지 알 수
+#: 있어야 한다는 표 재설계의 결론이라, `middle`(중분류)·`sub`(소분류) 를 대신 둔다.
+_REQUIRED_FIELDS = ("middle", "sub", "steps", "expected")
 #: 문자열 배열이어야 하는 필드.
 _LIST_FIELDS = ("steps", "expected")
 #: 문자열이어야 하는 필드. 없으면 넘어간다 (필수 여부는 `_REQUIRED_FIELDS` 가 본다).
-_STR_FIELDS = ("title", "precondition", "rationale")
+_STR_FIELDS = ("middle", "sub", "precondition", "rationale")
 #: 오류 메시지에서 기대 형태를 보여줄 때 쓰는 최소 예시.
-_SHAPE_EXAMPLE = ('{"testcases": [{"title": "...", "steps": ["..."], '
-                  '"expected": ["..."]}]}')
+_SHAPE_EXAMPLE = ('{"testcases": [{"middle": "...", "sub": "...", '
+                  '"steps": ["..."], "expected": ["..."]}]}')
 #: `in` 검사에 집합 대신 튜플을 쓰는 이유: priority 자리에 배열·객체가 와도
 #: 해시 불가 예외 없이 그냥 "유효하지 않음"으로 떨어져야 한다.
 _PRIORITY_VALUES = tuple(p.value for p in Priority)
+#: 기대결과가 이 개수를 넘으면 경고한다 — **막지는 않는다.** 나눌지는 판단이고,
+#: 판단을 코드가 강제하면 그 판단을 표현할 방법이 없어진다 (독립 결과 여러 개를
+#: 한 TC 에 담아야 하는 경우가 실제로 있다).
+_MAX_EXPECTED = 6
+#: 소분류가 이 길이를 넘으면 경고한다. 길다는 것은 결과를 소분류에 밀어
+#: 넣었거나 두 케이스가 붙어 있다는 신호이지, 그 자체가 오류는 아니다.
+_MAX_SUB_LEN = 25
 
 
 def _validate_payload(payload: object) -> str | None:
@@ -385,12 +394,12 @@ def _validate_item(item: object, i: int) -> str | None:
     """
     if not isinstance(item, dict):
         return (f"testcases[{i}] 가 객체가 아닙니다 ({type(item).__name__}). "
-                f'각 항목을 {{"title": "...", "steps": ["..."], "expected": ["..."]}} '
-                f"형태의 객체로 주세요.")
+                f'각 항목을 {{"middle": "...", "sub": "...", "steps": ["..."], '
+                f'"expected": ["..."]}} 형태의 객체로 주세요.')
 
     missing = [k for k in _REQUIRED_FIELDS if not item.get(k)]
     if missing:
-        # 빠진 것만 나열한다 — 필수 필드 세 개를 항상 찍으면 모델이 어느 것을
+        # 빠진 것만 나열한다 — 필수 필드 네 개를 항상 찍으면 모델이 어느 것을
         # 더해야 하는지 다시 추론해야 한다.
         return (f"testcases[{i}] 에 필수 필드가 없습니다 — {', '.join(missing)}. "
                 f"빠진 필드를 채워 다시 주세요.")
@@ -455,11 +464,21 @@ def cmd_tc_add(args: argparse.Namespace, cfg: AppConfig) -> int:
             if error:
                 _p(f"오류: {error}")
                 return 1
+            # `_REQUIRED_FIELDS` 는 존재·truthy 만 본다 — 제로폭 공백처럼 보이지
+            # 않는 문자만으로 이루어진 값은 truthy 라 그 검사를 그냥 통과한다.
+            # `middle`/`sub` 는 표에서 그 TC 가 무엇인지 가리키는 유일한 이름이라
+            # (`title` 이 빠진 자리) 여기서 `is_blank` 로 한 번 더 본다.
+            for field in ("middle", "sub"):
+                if is_blank(str(item.get(field, ""))):
+                    _p(f"오류: {field} 가 비어 있습니다 (TC {i + 1}번). "
+                       f"middle 은 화면·메뉴 이름, sub 는 케이스 이름입니다.")
+                    return 1
             cases.append(TestCase(
                 id="",
                 category_major=args.content,
-                category_minor=args.family,
-                title=str(item["title"]),
+                category_minor=str(item["middle"]),
+                category_sub=str(item["sub"]),
+                family=args.family,
                 precondition=str(item.get("precondition", "")),
                 steps=[str(x) for x in item["steps"]],
                 expected=[str(x) for x in item["expected"]],
@@ -485,6 +504,21 @@ def cmd_tc_add(args: argparse.Namespace, cfg: AppConfig) -> int:
            f"— 이 명령은 계열 단위 갈아끼우기입니다.")
         _p(f"   앞 배치를 남기려면 그 TC들까지 testcases 에 함께 넣어 "
            f"다시 실행하세요.")
+
+    # 아래 두 개는 **경고일 뿐 막지 않는다** — 몇 개로 나눌지, 소분류 이름이
+    # 적절한지는 판단이라 코드가 셀 수 없다. 저장 뒤에 내는 이유는 저장은
+    # 이미 됐고 다시 볼 것이 있다는 뜻이기 때문이다. 이 명령의 다른 안내문(바로
+    # 위 "✓ … 저장", "⚠ … 교체했습니다")과 같은 채널(표준출력)로 낸다 — 호출자인
+    # 모델에게는 방금 만든 TC에 대한 피드백이지, 환경 진단(`_warn`)이 아니다.
+    for tc in cases:
+        if len(tc.expected) > _MAX_EXPECTED:
+            _p(f"⚠ {tc.category_sub}: 기대결과가 {len(tc.expected)}개입니다. "
+               f"{_MAX_EXPECTED}개를 넘으면 영역별로 나누는 편이 낫습니다 — "
+               f"하나가 틀렸을 때 어디가 문제인지 표에서 사라집니다.")
+        if len(tc.category_sub) > _MAX_SUB_LEN:
+            _p(f"⚠ 소분류가 {len(tc.category_sub)}자입니다: '{tc.category_sub}'. "
+               f"결과를 소분류에 넣었거나 두 케이스가 붙어 있을 수 있습니다 — "
+               f"결과는 기대결과 칸에 적습니다.")
     return 0
 
 
@@ -518,7 +552,10 @@ def cmd_tc_list(args: argparse.Namespace, cfg: AppConfig) -> int:
 
     for tc in cases:
         mark = "  ⚠ 근거 철회됨" if tc.family in withdrawn else ""
-        _p(f"  [{tc.family}] {tc.title}  ({tc.origin.value}){mark}")
+        # `tc.title` 이 아니라 `tc.category_sub` 다 — `tc add` 가 더 이상 title 을
+        # 읽지 않으므로(표 재설계로 소분류가 그 자리를 대신한다), 여기서 title 을
+        # 계속 찍으면 새로 만든 TC 는 전부 빈칸으로 나온다.
+        _p(f"  [{tc.family}] {tc.category_sub}  ({tc.origin.value}){mark}")
 
     if withdrawn:
         _p("\n⚠ 근거가 철회된 계열이 있습니다 — TC는 지우지 않았습니다")

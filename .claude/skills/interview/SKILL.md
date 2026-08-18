@@ -220,7 +220,7 @@ description: 게임 컨텐츠 QA 인터뷰를 진행한다. 사용자가 컨텐�
 
 ```json
 {"testcases": [
-  {"title": "...", "precondition": "...",
+  {"middle": "...", "sub": "...", "precondition": "...",
    "steps": ["..."], "expected": ["..."],
    "rationale": "core_action 슬롯: '<사용자 진술 인용>'에서 도출"}
 ]}

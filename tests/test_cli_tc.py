@@ -15,16 +15,20 @@ def ready(cfg_env):
     return cfg_env
 
 
-def _payload(title="정상 동작"):
-    return json.dumps({
-        "testcases": [{
-            "title": title,
-            "precondition": "파티 편성 화면",
-            "steps": ["파티 적용을 누른다"],
-            "expected": ["파티가 적용된다"],
-            "rationale": "core_action 슬롯에서 도출",
-        }]
-    }, ensure_ascii=False)
+def _payload(sub="정상 동작", **over):
+    """유효한 `tc add` 페이로드 하나.
+
+    첫 인자 이름이 예전엔 `title` 이었다. 이 파일의 많은 테스트가 저장된 TC를
+    구별하는 데 그 값을 썼는데, `tc add` 가 더 이상 `title` 을 읽지 않으므로
+    (표 재설계로 소분류가 그 자리를 대신한다) 같은 역할을 `sub`(소분류)가
+    잇는다 — 호출부(`_payload("파일에서 읽은 TC")` 처럼 위치 인자로 부르는
+    자리 포함)를 그대로 두기 위해 이름만 바꿨다.
+    """
+    item = {"middle": "파티 편성", "sub": sub,
+            "precondition": "파티 편성 화면", "steps": ["파티 적용을 누른다"],
+            "expected": ["파티가 적용된다"], "rationale": "core_action 슬롯에서 도출"}
+    item.update(over)
+    return json.dumps({"testcases": [item]}, ensure_ascii=False)
 
 
 def test_plan_lists_filled_family(ready, capsys):
@@ -47,7 +51,9 @@ def test_add_accepts_planned_family(stdin_text, ready, capsys, monkeypatch):
                "--origin", "interview", "--json", "-"])
     assert rc == 0
     with KnowledgeStore(ready / "starrail.db") as s:
-        assert [t.title for t in s.testcases("파티편성")] == ["정상 동작"]
+        # `title` 은 더 이상 읽지 않는다 — 저장된 TC를 식별하는 값은
+        # `category_sub`(소분류)로 옮겨왔다.
+        assert [t.category_sub for t in s.testcases("파티편성")] == ["정상 동작"]
 
 
 def test_add_rejects_unplanned_family(stdin_text, ready, capsys, monkeypatch):
@@ -116,7 +122,8 @@ def test_add_rejects_missing_required_field(stdin_text, ready, monkeypatch, caps
     (실측: 블록 삭제 후 `pytest tests/test_cli_tc.py` → 13 passed.)
     실제 메시지를 고정해 그 구멍을 막는다.
     """
-    bad = json.dumps({"testcases": [{"title": "제목만 있음"}]}, ensure_ascii=False)
+    bad = json.dumps({"testcases": [{"middle": "파티 편성", "sub": "제목만 있음"}]},
+                     ensure_ascii=False)
     stdin_text(bad)
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
@@ -134,7 +141,8 @@ def test_add_missing_field_message_names_only_what_is_missing(stdin_text, ready,
     필수 필드 세 개를 항상 찍는 구현으로는 통과할 수 없어야, 메시지가 실제로
     무엇이 빠졌는지 계산한다는 것이 고정된다.
     """
-    bad = json.dumps({"testcases": [{"title": "t", "steps": ["s"]}]}, ensure_ascii=False)
+    bad = json.dumps({"testcases": [{"middle": "m", "sub": "s", "steps": ["s"]}]},
+                     ensure_ascii=False)
     stdin_text(bad)
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
@@ -147,7 +155,8 @@ def test_add_missing_field_message_names_only_what_is_missing(stdin_text, ready,
 def _one(**over):
     """유효한 TC 항목 하나를 만들고 지정한 키만 덮어쓴다."""
     item = {
-        "title": "정상 동작",
+        "middle": "파티 편성",
+        "sub": "정상 동작",
         "steps": ["파티 적용을 누른다"],
         "expected": ["파티가 적용된다"],
     }
@@ -249,7 +258,7 @@ def test_add_missing_testcases_key_names_next_action(stdin_text, ready, monkeypa
     assert rc == 1
     out = capsys.readouterr().out
     assert "testcases" in out
-    assert "title" in out                     # 기대 형태를 예시로 보여준다
+    assert "middle" in out                    # 기대 형태를 예시로 보여준다
 
 
 def test_add_rejects_unparseable_json_text(stdin_text, ready, monkeypatch, capsys):
@@ -263,19 +272,22 @@ def test_add_rejects_unparseable_json_text(stdin_text, ready, monkeypatch, capsy
     assert "JSONDecodeError" not in out
 
 
-def test_add_rejects_non_string_title(stdin_text, ready, monkeypatch, capsys):
-    """`title` 이 문자열이 아니면 `str()` 로 뭉개지 않고 거부한다.
+def test_add_rejects_non_string_middle(stdin_text, ready, monkeypatch, capsys):
+    """`middle` 이 문자열이 아니면 `str()` 로 뭉개지 않고 거부한다.
 
-    `{"title": {"a": 1}}` 은 truthy 라 필수 필드 검사를 통과하고,
-    `str(item["title"])` 이 `{'a': 1}` 을 그대로 xlsx 제목 칸에 넣었다.
-    steps/expected 와 같은 결함인데 라운드 1a 에서 `title` 만 빠졌다.
+    이 테스트는 원래 `title` 을 대상으로 "잘못된 타입의 필드는 JSON 경로와
+    함께 보고된다"를 고정했다. `tc add` 가 더 이상 `title` 을 읽지 않게 되면서
+    `_one(title=...)` 은 그냥 무시되는 여분의 키가 되어 rc==0 으로 통과해
+    버린다 — 코드가 실제로 읽는 필드로 과녁을 옮긴다. `{"middle": {"a": 1}}`
+    은 truthy 라 필수 필드 검사를 통과하고, `str(item["middle"])` 이
+    `{'a': 1}` 을 그대로 중분류 칸에 넣었다. steps/expected 와 같은 결함이다.
     """
-    stdin_text(_one(title={"a": 1}))
+    stdin_text(_one(middle={"a": 1}))
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
     out = capsys.readouterr().out
-    assert "testcases[0].title" in out
+    assert "testcases[0].middle" in out
     assert "dict" in out
     assert _stored(ready) == []
 
@@ -305,7 +317,7 @@ def test_add_rejects_unknown_priority(stdin_text, ready, monkeypatch, capsys):
 
 def test_add_names_the_offending_index(stdin_text, ready, monkeypatch, capsys):
     """여러 건 중 몇 번째가 틀렸는지 짚는다 — 앞의 두 건은 유효하다."""
-    ok = {"title": "t", "steps": ["s"], "expected": ["e"]}
+    ok = {"middle": "m", "sub": "s", "steps": ["s"], "expected": ["e"]}
     payload = json.dumps({"testcases": [ok, ok, {**ok, "steps": "문자열"}]},
                          ensure_ascii=False)
     stdin_text(payload)
@@ -337,7 +349,10 @@ def test_add_sets_kind_and_priority_from_family(stdin_text, ready, monkeypatch):
     assert tc.priority.value == "High"
     assert tc.origin.value == "인터뷰"
     assert tc.category_major == "파티편성"
-    assert tc.category_minor == "정상 경로"
+    # `category_minor` 는 더 이상 계열의 대용품이 아니다 (커밋 8449bda) —
+    # 계열은 `family` 필드가 실어 나른다. `category_minor` 는 이제 `middle`
+    # (화면·메뉴 이름)을 담으므로, 계열이 제대로 전달됐는지는 `family` 로 본다.
+    assert tc.family == "정상 경로"
 
 
 def test_list_shows_unmet_slots(stdin_text, ready, monkeypatch, capsys):
@@ -384,14 +399,14 @@ def test_add_reports_correct_added_and_kept_counts(stdin_text, ready, monkeypatc
     payload = json.dumps({
         "testcases": [
             {
-                "title": "정상 동작 1",
+                "middle": "파티 편성", "sub": "정상 동작 1",
                 "precondition": "파티 편성 화면",
                 "steps": ["파티 적용을 누른다"],
                 "expected": ["파티가 적용된다"],
                 "rationale": "core_action 슬롯에서 도출",
             },
             {
-                "title": "정상 동작 2",
+                "middle": "파티 편성", "sub": "정상 동작 2",
                 "precondition": "파티 편성 화면",
                 "steps": ["다른 파티를 적용한다"],
                 "expected": ["다른 파티가 적용된다"],
@@ -413,9 +428,15 @@ def test_add_reports_correct_added_and_kept_counts(stdin_text, ready, monkeypatc
 
 
 def _titled(*titles):
-    """제목만 다른 유효한 TC 페이로드."""
+    """소분류만 다른 유효한 TC 페이로드.
+
+    이름은 `_titled` 로 남겨 뒀다 — 호출부가 여전히 "제목만 다른 TC 여러 개"를
+    말하고 싶어 하고, 그 역할을 이제 `sub`(소분류)가 잇는다. `middle` 은
+    구분에 쓰이지 않으므로 고정값이다.
+    """
     return json.dumps({"testcases": [
-        {"title": t, "steps": ["절차"], "expected": ["기대"]} for t in titles
+        {"middle": "파티 편성", "sub": t, "steps": ["절차"], "expected": ["기대"]}
+        for t in titles
     ]}, ensure_ascii=False)
 
 
@@ -444,7 +465,7 @@ def test_second_add_on_same_family_says_how_many_it_replaced(stdin_text, ready, 
     # "다시 실행하세요" 도 모두 그 블록 안 문구라 새로 잡아내는 변이가 없는,
     # 이 브랜치가 아홉 번 만들어낸 "이웃의 부분문자열" 모양이었다.
     assert "⚠" not in first
-    assert [t.title for t in _stored(ready)] == ["A", "B"]
+    assert [t.category_sub for t in _stored(ready)] == ["A", "B"]
 
     stdin_text(_titled("C"))
     assert main(["tc", "add", "파티편성", "--family", "정상 경로",
@@ -455,7 +476,7 @@ def test_second_add_on_same_family_says_how_many_it_replaced(stdin_text, ready, 
     assert "⚠" in second                        # 눈에 띄어야 한다
     assert "기존 TC 2건" in second               # 몇 건을 지웠는지 정확히
     assert "다시 실행하세요" in second           # 다음 조치를 알린다
-    assert [t.title for t in _stored(ready)] == ["C"]
+    assert [t.category_sub for t in _stored(ready)] == ["C"]
 
 
 def test_replaced_count_excludes_preserved_user_testcases(stdin_text, ready, capsys):
@@ -471,7 +492,7 @@ def test_replaced_count_excludes_preserved_user_testcases(stdin_text, ready, cap
     main(["tc", "add", "파티편성", "--family", "정상 경로",
           "--origin", "user", "--json", "-"])
     # 이 시점: '사람이 추가'(user) 만 남아 있다 — 앞의 생성분은 교체됐다
-    assert [t.title for t in _stored(ready)] == ["사람이 추가"]
+    assert [t.category_sub for t in _stored(ready)] == ["사람이 추가"]
     capsys.readouterr()          # 앞선 명령의 확인 문구를 버린다
 
     stdin_text(_titled("새 생성분"))
@@ -481,7 +502,7 @@ def test_replaced_count_excludes_preserved_user_testcases(stdin_text, ready, cap
 
     assert "사람 손댄 1건 보존" in out
     assert "⚠" not in out                  # 지운 것이 없으므로 경고도 없다
-    assert {t.title for t in _stored(ready)} == {"사람이 추가", "새 생성분"}
+    assert {t.category_sub for t in _stored(ready)} == {"사람이 추가", "새 생성분"}
 
 
 def test_add_stores_inferred_origin(stdin_text, ready, monkeypatch):
@@ -535,7 +556,7 @@ def test_list_marks_testcase_whose_evidence_was_withdrawn(stdin_text, ready, mon
     assert "정상 동작" in out              # TC 는 그대로 남아 있다
     assert "근거 철회됨" in out            # 그런데 근거가 없다고 표시된다
     assert "정상 경로 TC 없음" not in out  # 거짓말을 하지 않는다
-    assert [t.title for t in _stored(ready)] == ["정상 동작"]   # 삭제 안 함
+    assert [t.category_sub for t in _stored(ready)] == ["정상 동작"]   # 삭제 안 함
 
 
 def test_list_still_reports_families_that_really_have_no_tc(ready, capsys):
@@ -663,7 +684,71 @@ def test_add_reads_the_payload_from_a_file_path(ready, tmp_path, capsys):
 
     assert main(["tc", "add", "파티편성", "--family", "정상 경로",
                  "--origin", "interview", "--json", str(path)]) == 0
-    assert [t.title for t in _stored(ready)] == ["파일에서 읽은 TC"]
+    assert [t.category_sub for t in _stored(ready)] == ["파일에서 읽은 TC"]
+
+
+# --- tc add 입력 계약: middle/sub, 경고 두 종 (T4) -----------------------
+
+
+def test_middle_and_sub_are_stored(ready, stdin_text, capsys):
+    stdin_text(_payload(middle="신규 계정 연동", sub="비밀번호 불일치"))
+    assert main(["tc", "add", "파티편성", "--family", "정상 경로",
+                 "--origin", "inferred", "--json", "-"]) == 0
+    with KnowledgeStore(ready / "starrail.db") as st:
+        tc = st.testcases("파티편성")[0]
+    assert (tc.category_minor, tc.category_sub) == ("신규 계정 연동", "비밀번호 불일치")
+
+
+@pytest.mark.parametrize("field", ["middle", "sub"])
+def test_a_blank_middle_or_sub_is_refused(ready, stdin_text, capsys, field):
+    """제로폭 공백은 `strip()` 이 못 지운다 — `is_blank` 로 판정한다."""
+    stdin_text(_payload(**{field: "  \u200b "}))
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "inferred", "--json", "-"])
+    assert rc == 1
+    assert "비어" in capsys.readouterr().out
+
+
+def test_an_empty_expected_is_refused(ready, stdin_text, capsys):
+    """확인할 것이 없는 TC 는 TC 가 아니다."""
+    stdin_text(_payload(expected=[]))
+    assert main(["tc", "add", "파티편성", "--family", "정상 경로",
+                 "--origin", "inferred", "--json", "-"]) == 1
+
+
+def test_more_than_six_expected_warns_but_saves(ready, stdin_text, capsys):
+    """규칙 3은 기계적이라 셀 수 있다. 다만 **막지는 않는다** — 나눌지는
+    판단이고, 막으면 그 판단을 표현할 방법이 없어진다."""
+    stdin_text(_payload(expected=[f"확인 {n}" for n in range(7)]))
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "inferred", "--json", "-"])
+    assert rc == 0, "경고여야 하는데 막았습니다"
+    out = capsys.readouterr().out
+    assert "6개" in out and "나누" in out
+    with KnowledgeStore(ready / "starrail.db") as st:
+        assert len(st.testcases("파티편성")) == 1
+
+
+def test_a_long_sub_warns_but_saves(ready, stdin_text, capsys):
+    """길다는 것은 결과를 밀어 넣었다는 신호이지 그 자체가 오류는 아니다."""
+    stdin_text(_payload(sub="비밀번호 두 필드가 불일치하면 연동하기 버튼이 비활성으로 유지된다"))
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "inferred", "--json", "-"])
+    assert rc == 0
+    assert "소분류" in capsys.readouterr().out
+
+
+def test_a_judgement_rule_is_never_enforced_by_code(ready, stdin_text, capsys):
+    """기대결과가 2개라는 이유만으로 막으면 안 된다.
+
+    한때 `expected` 를 정확히 1개로 강제하려 했다가 철회했다 — 회원가입의
+    DB 저장과 이메일 발송처럼 한 문장으로 이어 쓸 수 없는 독립 결과가 있고,
+    반대로 화면 전환과 문구 노출처럼 한 세트인 것도 있다. 그 구분은 판단이라
+    코드가 셀 수 없다. 누가 선의로 하드 거부를 되살리면 이 테스트가 막는다.
+    """
+    stdin_text(_payload(expected=["메인 페이지로 이동한다", "환영 문구가 노출된다"]))
+    assert main(["tc", "add", "파티편성", "--family", "정상 경로",
+                 "--origin", "inferred", "--json", "-"]) == 0
 
 
 def test_add_on_missing_file_says_it_could_not_read_the_json(ready, tmp_path, capsys):
