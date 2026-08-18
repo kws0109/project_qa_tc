@@ -366,3 +366,69 @@ def test_an_old_database_without_the_code_column_still_opens(tmp_path):
         assert st.content_code("로그인") == ""
         st.set_content_code("로그인", "LOGIN")
         assert st.content_code("로그인") == "LOGIN"
+
+
+def test_set_content_code_refuses_a_code_already_owned_by_another_content(tmp_path):
+    """`apply_reclassification` 처럼 `set_content_code` 를 직접 부르는 호출자도
+    이 검사를 피해갈 수 없어야 한다 (Bug C).
+
+    실측 재현: `로그인보상`이 먼저 `slot init --code LOGIN` 으로 LOGIN 을
+    선점한다 — 그 시점엔 `로그인`이 아직 코드가 없어(`codes_in_use()` 는
+    `code != ''` 만 본다) 충돌로 잡히지 않는다. 이후 마이그레이션이
+    `set_content_code(로그인, LOGIN)` 을 그대로 밀어붙이면, 두 컨텐츠가 같은
+    코드를 갖게 되고 독립된 `tc_seq` 카운터가 같은 `TC_LOGIN_NNN` 을 내놓아
+    나중에 저장된 쪽이 먼저 것을 지운다.
+    """
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("로그인보상", game="g", types=[], code="LOGIN")
+        st.init_content("로그인", game="g", types=[])
+        assert st.content_code("로그인") == ""
+
+        with pytest.raises(ValueError) as e:
+            st.set_content_code("로그인", "LOGIN")
+        assert "로그인보상" in str(e.value)
+        assert st.content_code("로그인") == ""   # 거절됐으니 그대로여야 한다
+
+
+def test_set_content_code_refuses_a_malformed_code(tmp_path):
+    """형식 검사도 `cmd_slot_init` 뿐 아니라 저장소 자신이 한다 (Bug C)."""
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("로그인", game="g", types=[])
+        with pytest.raises(ValueError) as e:
+            st.set_content_code("로그인", "log-in")
+        assert "영문 대문자" in str(e.value)
+
+
+def test_set_content_code_refuses_an_unknown_content(tmp_path):
+    """존재하지 않는 컨텐츠에는 코드를 달 수 없다 (Bug C)."""
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        with pytest.raises(KeyError):
+            st.set_content_code("없는컨텐츠", "LOGIN")
+
+
+def test_codes_in_use_reports_all_owners_when_a_code_is_already_duplicated(tmp_path):
+    """이미 벌어진 중복(이 가드가 생기기 전 데이터 등)을 진단할 때, 소유자를
+    하나만 골라 보여주면 나머지 소유자가 안 보인다 — 여기서는 저수준 SQL로
+    그 상태를 직접 재현한다(`set_content_code` 는 이제 이 상태를 만들지
+    못하게 막으므로).
+    """
+    import sqlite3
+
+    path = tmp_path / "g.db"
+    with KnowledgeStore(path) as st:
+        st.init_content("로그인", game="g", types=[])
+        st.init_content("로그인보상", game="g", types=[])
+
+    con = sqlite3.connect(path)
+    con.execute("UPDATE contents SET code = 'LOGIN' WHERE name IN ('로그인', '로그인보상')")
+    con.commit()
+    con.close()
+
+    with KnowledgeStore(path) as st:
+        owners = st.codes_in_use()
+    # `"로그인" in owners["LOGIN"]` 처럼 부분 문자열로 검사하면 안 된다 —
+    # "로그인" 은 "로그인보상" 의 접두어라, 소유자가 '로그인보상' 하나뿐인
+    # (틀린) 옛 구현도 이 검사를 우연히 통과한다(실측: 이 부분 문자열 검사로
+    # 바꾸면 옛 구현으로 되돌려도 이 테스트가 초록이다). 콤마로 나눠 집합으로
+    # 비교해야 "두 소유자 모두 보인다" 를 정확히 고정한다.
+    assert set(owners["LOGIN"].split(", ")) == {"로그인", "로그인보상"}

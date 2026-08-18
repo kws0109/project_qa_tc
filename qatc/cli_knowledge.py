@@ -28,7 +28,7 @@ from .knowledge.gate import (
 )
 from .knowledge.models import SlotStatus, is_blank
 from .knowledge.slots import KNOWN_TYPES
-from .knowledge.store import KnowledgeStore
+from .knowledge.store import KnowledgeStore, is_valid_code_format
 from .models import Priority, TCOrigin, TestCase
 
 
@@ -194,11 +194,12 @@ def cmd_slot_init(args: argparse.Namespace, cfg: AppConfig) -> int:
            "'qatc slot init <컨텐츠> --game <게임>' 처럼 이름을 지정하세요.")
         return 1
 
-    # 코드 검증 순서가 중요하다 — 형식을 먼저 보고(DB 를 열 필요조차 없다),
-    # 그 다음 기존 코드와의 충돌, 마지막으로 다른 컨텐츠와의 중복이다. 형식이
-    # 틀린 코드로 충돌·중복부터 이야기하면 사용자는 "어느 것부터 고쳐야
-    # 하는지" 다시 추론해야 한다.
-    if args.code and not re.fullmatch(r"[A-Z0-9]{2,12}", args.code):
+    # 형식은 여기서 미리 본다 — DB 를 열 필요조차 없다. 형식이 틀린 코드로
+    # 실패해도 새 게임 DB 파일이 생기지 않게 하려는 것이다(오타로 빈 DB가
+    # 조용히 남는 것을 피하는 이 CLI 의 기존 방침). 충돌·중복은 DB 를 열어야
+    # 알 수 있으므로 아래에서 `KnowledgeStore`(`init_content`/`set_content_code`)
+    # 가 직접 본다 — 여기서 다시 베끼면 두 판정이 갈라질 여지가 생긴다.
+    if args.code and not is_valid_code_format(args.code):
         _p("오류: 컨텐츠 코드는 영문 대문자와 숫자 2~12자여야 합니다 (예: LOGIN). "
            "다시 지정해 주세요.")
         return 1
@@ -212,19 +213,20 @@ def cmd_slot_init(args: argparse.Namespace, cfg: AppConfig) -> int:
             existing_code = store.content_code(args.content)
             if existing_code and existing_code != args.code:
                 # 재실행이 코드를 덮으면 이미 발급된 TC ID(`TC_<코드>_<번호>`)가
-                # 가리키는 컨텐츠가 바뀐다 — 인용된 ID 가 죽는다.
+                # 가리키는 컨텐츠가 바뀐다 — 인용된 ID 가 죽는다. 이 규칙은
+                # `set_content_code` 의 검사 목록(형식·존재·중복)에 없다 —
+                # "이미 같은 컨텐츠가 다른 코드를 갖고 있다" 는 여기서만 판정한다.
                 _p(f"오류: '{args.content}'의 코드는 이미 발급된 '{existing_code}'라 "
                    f"바꿀 수 없습니다 (요청한 코드: '{args.code}').")
-                return 1
-            owner = store.codes_in_use().get(args.code)
-            if owner and owner != args.content:
-                _p(f"오류: 코드 {args.code}는 이미 '{owner}'가 쓰고 있습니다. "
-                   f"다른 약어를 지정하세요.")
                 return 1
 
         content = store.init_content(args.content, game=game, types=types, code=args.code)
         n = len(store.slots(args.content))
     except ValueError as exc:
+        # 중복(다른 컨텐츠가 이미 이 코드를 씀)은 이제 `init_content` 안에서
+        # `KnowledgeStore._ensure_code_available` 이 판정한다 — 새 컨텐츠 경로도
+        # 기존 컨텐츠 경로(`set_content_code`)와 같은 검사를 지나가게 하려는
+        # 것이라, 여기서 다시 중복 검사를 베끼지 않는다.
         _p(f"오류: {exc}")
         return 1
     finally:

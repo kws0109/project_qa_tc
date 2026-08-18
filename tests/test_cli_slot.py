@@ -556,6 +556,25 @@ def test_a_duplicate_code_in_the_same_game_is_refused(cfg_env, capsys):
     assert "이미" in capsys.readouterr().out
 
 
+def test_a_duplicate_code_does_not_leave_a_phantom_content_behind(cfg_env, capsys):
+    """새 컨텐츠 생성이 코드 중복으로 실패하면, 이름만 있고 코드 없는 유령
+    컨텐츠도 남지 않아야 한다 (Bug C).
+
+    `KnowledgeStore.close()` 는 예외와 무관하게 항상 커밋한다 — `init_content`
+    가 컨텐츠 행을 먼저 넣고 코드 검사를 나중에 하면, 검사가 실패해 명령이
+    rc=1 로 끝나도 그 행은 이미 커밋돼 있다. 검사를 행 삽입보다 먼저 해야
+    이 유령이 안 생긴다.
+    """
+    from qatc.knowledge.store import KnowledgeStore
+
+    main(["slot", "init", "로그인", "--game", "starrail", "--code", "LOGIN"])
+    rc = main(["slot", "init", "로그인보상", "--game", "starrail", "--code", "LOGIN"])
+    assert rc == 1
+
+    with KnowledgeStore(cfg_env / "starrail.db") as st:
+        assert st.get_content("로그인보상") is None
+
+
 def test_changing_the_code_of_an_existing_content_is_refused(cfg_env, capsys):
     main(["slot", "init", "로그인", "--game", "starrail", "--code", "LOGIN"])
     rc = main(["slot", "init", "로그인", "--game", "starrail", "--code", "SIGNIN"])

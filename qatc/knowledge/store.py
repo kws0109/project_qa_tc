@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +55,22 @@ CREATE TABLE IF NOT EXISTS tc_seq (
     last    INTEGER NOT NULL DEFAULT 0
 );
 """
+
+
+#: 컨텐츠 코드 형식 — 영문 대문자와 숫자 2~12자 (스펙 §3).
+_CODE_PATTERN = re.compile(r"[A-Z0-9]{2,12}")
+
+
+def is_valid_code_format(code: str) -> bool:
+    """컨텐츠 코드 형식을 검사한다. DB 연결이 필요 없다.
+
+    `cmd_slot_init` 이 이 함수로 DB를 열기 전에 미리 걸러낸다 — 형식이 틀린
+    코드로 새 게임 DB 파일이 조용히 생기는 것을 막기 위해서다(오타 하나로
+    빈 DB가 생기지 않게 하는 이 CLI의 기존 방침과 같다). `KnowledgeStore`
+    자신도 `set_content_code`·`init_content` 에서 같은 함수를 쓴다 — 두 곳이
+    각자 정규식을 베끼면 한쪽만 느슨해지는 회귀가 생긴다.
+    """
+    return bool(_CODE_PATTERN.fullmatch(code))
 
 
 #: DB 잠금 안내 (설계 스펙 §7). `timeout=30.0` 은 재시도까지만 담당하고,
@@ -152,15 +169,65 @@ class KnowledgeStore:
             "SELECT code FROM contents WHERE name = ?", (name,)).fetchone()
         return row["code"] if row else ""
 
+    def _validate_code(self, code: str) -> None:
+        """형식만 본다 — 존재·중복은 호출 맥락(새 컨텐츠냐 기존이냐)마다 달라
+        여기서 함께 보지 않는다."""
+        if not is_valid_code_format(code):
+            raise ValueError(
+                f"컨텐츠 코드는 영문 대문자와 숫자 2~12자여야 합니다 (예: LOGIN) "
+                f"— 받은 값: '{code}'."
+            )
+
+    def _conflicting_owner(self, code: str, name: str) -> str | None:
+        """`code` 를 이미 `name` 아닌 다른 컨텐츠가 쓰고 있으면 그 이름을 돌려준다."""
+        owner = self.codes_in_use().get(code)
+        return owner if owner and owner != name else None
+
+    def _ensure_code_available(self, code: str, name: str) -> None:
+        owner = self._conflicting_owner(code, name)
+        if owner:
+            raise ValueError(f"코드 {code}는 이미 '{owner}'가 쓰고 있습니다. 다른 약어를 지정하세요.")
+
     def set_content_code(self, name: str, code: str) -> None:
+        """컨텐츠에 TC ID 접두어를 단다.
+
+        형식·존재·중복을 **여기서** 검사한다. 예전에는 이 세 가지를
+        `cmd_slot_init` 만 (그것도 `init_content` 를 부르기 **전에**) 검사했다.
+        그런데 `apply_reclassification`(승인된 재분류 마이그레이션)은 이 메서드를
+        직접 불러 그 검사를 통째로 우회한다. 실측(Bug C): `로그인보상`이 먼저
+        `slot init --code LOGIN` 으로 LOGIN 을 선점해도(그 시점엔 `로그인`이
+        아직 코드가 없어 `codes_in_use()` 에 안 잡힌다), 마이그레이션이
+        `set_content_code(로그인, LOGIN)` 을 그대로 밀어붙이면 두 컨텐츠가
+        같은 코드를 갖게 되고, 독립된 `tc_seq` 카운터가 같은 `TC_LOGIN_NNN`
+        을 내놓아 `testcases.id` 가 기본키인 `INSERT OR REPLACE` 가 한쪽을
+        지운다. 이 메서드를 유일한 쓰기 경로로 만들면 호출자가 누구든
+        (CLI든 마이그레이션이든) 이 검사를 피해갈 수 없다.
+        """
+        self._validate_code(code)
+        if self.get_content(name) is None:
+            raise KeyError(f"컨텐츠 '{name}'가 없습니다. 먼저 slot init을 실행하세요.")
+        self._ensure_code_available(code, name)
         db = self._db()
         db.execute("UPDATE contents SET code = ? WHERE name = ?", (code, name))
         db.commit()
 
     def codes_in_use(self) -> dict[str, str]:
-        """코드 -> 컨텐츠 이름. 중복 판정에 쓴다."""
-        return {r["code"]: r["name"] for r in self._db().execute(
-            "SELECT code, name FROM contents WHERE code != ''")}
+        """코드 -> 컨텐츠 이름(들). 중복 판정에 쓴다.
+
+        한 코드를 두 컨텐츠가 갖고 있으면(이 가드가 생기기 전 데이터이거나,
+        DB를 직접 고친 경우) 이름 하나만 골라 돌려주는 예전 구현은 나머지
+        소유자를 감췄다 — SQL이 어느 행을 나중에 주느냐에 따라 **틀린** 단독
+        소유자를 진단자에게 보여준 것이다(실측: Bug C 재현에서 '로그인'이
+        진짜 침입자인데 '로그인보상'이 찍혔다). 중복이면 소유자를 전부
+        콤마로 나열해, 적어도 "단독 소유가 아니다"는 사실이 드러나게 한다.
+        """
+        rows = self._db().execute(
+            "SELECT code, name FROM contents WHERE code != '' ORDER BY name"
+        ).fetchall()
+        owners: dict[str, list[str]] = {}
+        for r in rows:
+            owners.setdefault(r["code"], []).append(r["name"])
+        return {code: ", ".join(names) for code, names in owners.items()}
 
     def init_content(self, name: str, game: str, types: Sequence[str], code: str = "") -> Content:
         """컨텐츠를 만들거나, 이미 있으면 새 유형의 슬롯만 덧붙인다.
@@ -170,8 +237,13 @@ class KnowledgeStore:
 
         `code` 는 TC ID 접두어다. 이미 코드가 있으면 재실행이 덮지 않는다 —
         덮으면 이미 발급된 ID(`TC_<코드>_<번호>`)와 어긋난다. `code` 는 여기서는
-        선택值이다 — 컨텐츠를 만드는 것과 TC ID 를 발급하는 것은 다른 결정이라,
+        선택값이다 — 컨텐츠를 만드는 것과 TC ID 를 발급하는 것은 다른 결정이라,
         코드 없는 컨텐츠도 만들 수 있어야 한다 (거절은 `_next_tc_id` 쪽 몫이다).
+
+        새 컨텐츠에 `code` 를 함께 주면 **행을 넣기 전에** 형식·중복을 검사한다.
+        먼저 넣고 `set_content_code` 로 검사하면, 검사가 실패해도 그 실패가
+        `KnowledgeStore.close()` 의 무조건 커밋(예외와 무관하게 항상 커밋한다)을
+        타고 그대로 확정돼 — 실패한 명령인데 코드 없는 유령 컨텐츠가 남는다.
         """
         db = self._db()
         existing = self.get_content(name)
@@ -179,6 +251,9 @@ class KnowledgeStore:
         specs = build_slot_set(merged)  # 모르는 유형이면 여기서 ValueError
 
         if existing is None:
+            if code:
+                self._validate_code(code)
+                self._ensure_code_available(code, name)
             db.execute(
                 "INSERT INTO contents (name, game, types, code, created_at) VALUES (?, ?, ?, ?, ?)",
                 (name, game, json.dumps(merged, ensure_ascii=False), code,
