@@ -30,7 +30,10 @@ def test_export_creates_three_sheets(make_tc, tmp_path):
 
 
 def test_export_writes_testcase_row(make_tc, tmp_path):
-    p = export_tc_excel("파티편성", [make_tc(title="정상 동작")], [], tmp_path / "out.xlsx")
+    # `title` 은 더 이상 행에 안 쓰인다 (task-2) — 행을 식별하는 값은
+    # `category_sub` 로 옮겨졌다. 확인하려는 것은 그대로다: 지정한 값이
+    # 실제로 행에 쓰이고, 출처도 함께 나온다는 것.
+    p = export_tc_excel("파티편성", [make_tc(category_sub="정상 동작")], [], tmp_path / "out.xlsx")
     ws = load_workbook(p)["테스트케이스"]
     values = [c.value for c in ws[2]]
     assert "정상 동작" in values
@@ -38,8 +41,10 @@ def test_export_writes_testcase_row(make_tc, tmp_path):
 
 
 def test_export_survives_control_characters(make_tc, tmp_path):
-    # 이 케이스가 예전 export 를 통째로 죽였다 (IllegalCharacterError)
-    bad = make_tc(title="제어문자\x03포함")
+    # 이 케이스가 예전 export 를 통째로 죽였다 (IllegalCharacterError).
+    # 제어문자를 실어 나르던 필드가 `title` 에서 `category_sub` 로 바뀌었을 뿐,
+    # "행에 쓰이는 문자열은 clean_cell 을 반드시 거친다" 는 확인 대상은 같다.
+    bad = make_tc(category_sub="제어문자\x03포함")
     p = export_tc_excel("파티편성", [bad], [], tmp_path / "out.xlsx")
     ws = load_workbook(p)["테스트케이스"]
     assert any(c.value == "제어문자포함" for c in ws[2])
@@ -172,6 +177,60 @@ def test_summary_counts_withdrawn_testcases(make_tc, tmp_path):
                         withdrawn={"정상 경로"})
     ws = load_workbook(p)["요약"]
     assert _summary_value(ws, "근거 철회된 TC") == "1"
+
+
+def test_the_sheet_has_the_three_level_hierarchy_and_no_title(tmp_path, make_tc):
+    """대·중·소가 표에 있고 `제목`·`유형` 칸은 없어야 한다.
+
+    헤더를 통째로 비교한다 — 부분 문자열로 보면 컬럼 순서가 뒤바뀌거나
+    하나가 사라져도 통과한다.
+    """
+    from openpyxl import load_workbook
+
+    tc = make_tc(title="쓰이지 않는 옛 제목")
+    tc.category_major, tc.category_minor = "로그인", "신규 계정 연동"
+    tc.category_sub, tc.family = "비밀번호 불일치", "경계값"
+    out = export_tc_excel("로그인", [tc], [], tmp_path / "o.xlsx", set())
+    ws = load_workbook(out)["테스트케이스"]
+
+    header = [c.value for c in ws[1]]
+    assert header == ["TC ID", "대분류", "중분류", "소분류", "사전조건", "절차",
+                      "기대결과", "우선순위", "출처", "근거", "근거 상태"]
+    assert "제목" not in header
+    assert "유형" not in header
+
+
+def test_the_row_carries_the_hierarchy_in_order(tmp_path, make_tc):
+    from openpyxl import load_workbook
+
+    tc = make_tc(title="쓰이지 않는 옛 제목")
+    tc.category_major, tc.category_minor = "로그인", "신규 계정 연동"
+    tc.category_sub, tc.family = "비밀번호 불일치", "경계값"
+    out = export_tc_excel("로그인", [tc], [], tmp_path / "o.xlsx", set())
+    ws = load_workbook(out)["테스트케이스"]
+
+    row = [c.value for c in ws[2]]
+    assert row[1:4] == ["로그인", "신규 계정 연동", "비밀번호 불일치"]
+    assert "쓰이지 않는 옛 제목" not in row
+    # M7: _ORIGIN_FILL 이 칠하는 열이 실제 출처(9열)인지 확인한다. 값은
+    # 색칠 위치와 무관하게 항상 같으므로 값 비교만으로는 옛 10열에 색칠이
+    # 남아도 통과해버린다 — 9열이 정말 칠해졌는지(그리고 10열은 비어
+    # 있는지) fill 자체를 봐야 잡힌다.
+    assert ws.cell(row=2, column=9).value == tc.origin.value
+    assert ws.cell(row=2, column=9).fill.fill_type == "solid"
+    assert ws.cell(row=2, column=10).fill.fill_type is None
+
+
+def test_withdrawal_still_shows_on_the_row(tmp_path, make_tc):
+    """계열 컬럼이 사라져도 근거 철회 표시는 행에 남는다 — 읽는 사람이
+    이 행을 믿어도 되는지 판단하는 유일한 단서다."""
+    from openpyxl import load_workbook
+
+    tc = make_tc()
+    tc.family, tc.category_sub = "경계값", "비밀번호 불일치"
+    out = export_tc_excel("로그인", [tc], [], tmp_path / "o.xlsx", {"경계값"})
+    ws = load_workbook(out)["테스트케이스"]
+    assert "철회" in str(ws.cell(row=2, column=11).value)
 
 
 def test_locked_output_directory_also_raises_export_blocked(monkeypatch, tmp_path):

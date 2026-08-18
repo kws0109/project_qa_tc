@@ -57,6 +57,10 @@ class TestCase:
     id: str
     category_major: str = ""
     category_minor: str = ""
+    #: 소분류 — 그 화면·기능 안에서 확인하는 **케이스 이름**. 결과는 적지
+    #: 않는다(`expected` 가 그 자리다). 대+중+소를 읽으면 어떤 테스트인지
+    #: 알 수 있어야 하고, 그래서 `title` 은 더 이상 쓰지 않는다.
+    category_sub: str = ""
     #: 이 TC 가 속한 계열. 게이트(`plan_families`)와 근거 철회 판정이 쓰는 단위다.
     #: `category_minor` 와 값이 같던 시절이 있었지만 그건 우연이었다 — 그쪽은
     #: 이제 화면·메뉴 계층을 담는다. 진실은 `testcases.family` 컬럼이고,

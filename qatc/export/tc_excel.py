@@ -64,22 +64,24 @@ def _sheet_testcases(
     ws.title = "테스트케이스"
     _header(
         ws,
-        ["TC ID", "대분류", "중분류", "제목", "사전조건", "절차", "기대결과",
-         "우선순위", "유형", "출처", "근거", "근거 상태"],
-        [14, 14, 14, 40, 28, 40, 40, 10, 10, 10, 36, 14],
+        ["TC ID", "대분류", "중분류", "소분류", "사전조건", "절차", "기대결과",
+         "우선순위", "출처", "근거", "근거 상태"],
+        [16, 14, 18, 24, 28, 40, 40, 10, 10, 36, 14],
     )
     for r, tc in enumerate(cases, start=2):
         values = [
-            tc.id, tc.category_major, tc.category_minor, tc.title, tc.precondition,
+            tc.id, tc.category_major, tc.category_minor, tc.category_sub,
+            tc.precondition,
             "\n".join(f"{i}. {s}" for i, s in enumerate(tc.steps, 1)),
             "\n".join(f"- {s}" for s in tc.expected),
-            tc.priority.value, tc.kind.value, tc.origin.value, tc.rationale,
+            tc.priority.value, tc.origin.value, tc.rationale,
             _EVIDENCE_WITHDRAWN if tc.family in withdrawn else _EVIDENCE_LIVE,
         ]
         for col, v in enumerate(values, start=1):
             cell = ws.cell(row=r, column=col, value=clean_cell(str(v)))
             cell.alignment = _WRAP
-        ws.cell(row=r, column=10).fill = _ORIGIN_FILL.get(tc.origin, PatternFill())
+        # 출처 칸이 10번째에서 9번째로 앞당겨졌다 — 색칠 대상도 함께 옮긴다.
+        ws.cell(row=r, column=9).fill = _ORIGIN_FILL.get(tc.origin, PatternFill())
 
 
 def _sheet_skipped(
