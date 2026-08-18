@@ -535,6 +535,24 @@ def test_add_without_a_code_refuses_before_deleting_existing_rows(cfg_env, stdin
     assert sorted(t.id for t in _stored(cfg_env)) == ["tc_old0", "tc_old1"]
 
 
+def test_add_refuses_a_batch_with_duplicate_middle_sub_pairs(stdin_text, ready, capsys):
+    """배치 안에서 (중분류, 소분류) 가 겹치면 거절한다 (Bug B) — 조용히
+    번호를 물려주면 나중 것이 앞의 것을 지우는데 rc=0 · "2건 저장" 만 찍힌다.
+    """
+    dup = json.dumps({"testcases": [
+        {"middle": "파티 편성", "sub": "중복", "steps": ["s1"], "expected": ["e1"]},
+        {"middle": "파티 편성", "sub": "중복", "steps": ["s2"], "expected": ["e2"]},
+    ]}, ensure_ascii=False)
+    stdin_text(dup)
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "interview", "--json", "-"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "중복" in out
+    assert "ValueError" not in out         # 날 예외가 아니라 우리 메시지여야 한다
+    assert _stored(ready) == []            # 아무것도 저장되지 않았다
+
+
 def test_add_stores_inferred_origin(stdin_text, ready, monkeypatch):
     stdin_text(_payload())
     main(["tc", "add", "파티편성", "--family", "정상 경로",

@@ -323,6 +323,33 @@ def test_replace_generated_without_a_code_refuses_before_deleting_existing_rows(
         assert sorted(t.id for t in st.testcases("파티편성")) == ["tc_old0", "tc_old1"]
 
 
+def test_replace_generated_refuses_a_batch_with_duplicate_minor_sub_pairs(tmp_path, make_tc):
+    """배치 안에서 (중분류, 소분류) 가 겹치면 조용히 번호를 물려주지 않고
+    거절한다 (Bug B).
+
+    겹치는 두 케이스가 기존 행의 id 를 물려받으면(`inherited`), 나중 것이
+    `INSERT OR REPLACE` 로 앞의 것을 지운다 — 그런데 반환값은 여전히
+    `len(cases)` 라 `tc add` 는 "2건 저장" rc=0 을 찍고 실제로는 1건만 남는다.
+    """
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("파티편성", game="g", types=[], code="PARTY")
+        # 이미 있는 행 하나 — 물려줄 id 가 있어야 실제 충돌(덮어쓰기)까지
+        # 재현된다. 없어도 거절은 마찬가지로 일어나야 하므로(표에서 구별이
+        # 안 되는 문제 자체는 기존 행 유무와 무관), 이 조건 없이도 아래
+        # 어서션은 성립한다.
+        st.add_testcase("파티편성", "정상 경로",
+                         make_tc(category_sub="중복 케이스"), ["core_action"])
+
+        dup_a = make_tc(category_sub="중복 케이스", title="본문A")
+        dup_b = make_tc(category_sub="중복 케이스", title="본문B")
+        with pytest.raises(ValueError) as e:
+            st.replace_generated("파티편성", "정상 경로", [dup_a, dup_b], ["core_action"])
+        assert "중복 케이스" in str(e.value)
+
+        # 거절됐으니 원래 있던 한 건이 그대로 남아 있어야 한다.
+        assert [t.category_sub for t in st.testcases("파티편성")] == ["중복 케이스"]
+
+
 def test_an_old_database_without_the_code_column_still_opens(tmp_path):
     """첫 실사용으로 만들어진 DB 에는 `contents.code` 가 없다."""
     import sqlite3

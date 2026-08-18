@@ -427,9 +427,33 @@ class KnowledgeStore:
         직접 롤백하지 않으면 그 무조건 커밋이 부분 삭제를 그대로 확정시켜
         버린다.
 
+        **배치 안에서 (중분류, 소분류) 가 겹치면 거절한다** (Bug B). 겹치는
+        두 케이스는 기존 행의 id 를 물려받을 때(`inherited`) 똑같은 id 를
+        받고, 나중 것이 `INSERT OR REPLACE` 로 앞의 것을 지운다 — 그런데
+        반환값은 여전히 `len(cases)` 라 `tc add` 는 "2건 저장" rc=0 을 찍고
+        실제로는 1건만 남는다. 조용히 번호를 나눠 주는 대신 거절한다 —
+        표에서 두 TC 를 구별할 수 없다는 문제 자체가 기존 행의 유무와
+        무관하게 성립하기 때문이다.
+
         :returns: (추가한 수, 보존한 수, 지운 수)
         """
         self._require_content_code(content)          # Bug A: 지우기 전에 거절
+
+        # Bug B: 배치 안에서 (중분류, 소분류) 가 겹치면 거절한다. 기존 행이
+        # 있든 없든 상관없다 — 겹치면 표에서 두 TC 를 구별할 수 없다는 문제
+        # 자체는 기존 행의 유무와 무관하게 성립한다.
+        seen: dict[tuple[str, str], bool] = {}
+        for tc in cases:
+            key = (tc.category_minor, tc.category_sub)
+            if key in seen:
+                raise ValueError(
+                    f"'{content}'의 '{family}' 계열에서 '{tc.category_minor} › "
+                    f"{tc.category_sub}' 조합이 이 배치에 두 번 있습니다. 같은 "
+                    f"(중분류, 소분류) 는 같은 TC 로 보고 번호를 물려주므로, 둘 다 "
+                    f"저장하면 나중 것이 앞의 것을 덮어씁니다. 소분류 이름을 "
+                    f"구분되게 다시 지어 다시 시도하세요."
+                )
+            seen[key] = True
 
         db = self._db()
         kept = 0

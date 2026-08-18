@@ -499,6 +499,11 @@ def cmd_tc_add(args: argparse.Namespace, cfg: AppConfig) -> int:
             # 같은 관례).
             _p(f"오류: {exc.args[0]}")
             return 1
+        except ValueError as exc:
+            # 배치 안에서 (중분류, 소분류) 가 겹침 (Bug B) — 역시 아무것도
+            # 지우기 전에 거절한다.
+            _p(f"오류: {exc}")
+            return 1
     finally:
         store.close()
 
