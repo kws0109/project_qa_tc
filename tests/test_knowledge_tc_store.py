@@ -21,6 +21,17 @@ def test_hash_changes_with_title(make_tc):
     assert testcase_hash(make_tc(title="가")) != testcase_hash(make_tc(title="나"))
 
 
+def test_hash_changes_with_category_sub(make_tc):
+    """`title` 이 항상 비므로 소분류가 형제 케이스를 가르는 유일한 이름이다.
+
+    소분류만 고친 편집이 해시에 안 보이면 `replace_generated` 가 다음
+    재생성 때 "사람이 안 고쳤다"로 오판해 그 편집을 지운다.
+    """
+    a = make_tc(category_sub="로그인 기록 없음")
+    b = make_tc(category_sub="로그인 기록 있음")
+    assert testcase_hash(a) != testcase_hash(b)
+
+
 def test_hash_changes_with_expected(make_tc):
     a = make_tc()
     b = make_tc()

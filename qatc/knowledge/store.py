@@ -376,6 +376,32 @@ class KnowledgeStore:
         ).fetchall()
         return {r["id"]: (json.loads(r["slot_keys"]), r["generated_hash"]) for r in rows}
 
+    def clear_testcases(self, content: str) -> int:
+        """한 컨텐츠의 TC 를 전부 지운다. 지운 수를 돌려준다.
+
+        마이그레이션 전용이다 — 평소에는 `replace_generated` 가 계열 단위로
+        갈아끼우며 사람이 고친 것을 보존한다. 여기서는 승인된 표로 통째로
+        갈아엎는 것이 의도다.
+        """
+        db = self._db()
+        n = db.execute("SELECT COUNT(*) AS c FROM testcases WHERE content = ?",
+                       (content,)).fetchone()["c"]
+        db.execute("DELETE FROM testcases WHERE content = ?", (content,))
+        db.commit()
+        return n
+
+    def set_tc_seq(self, content: str, last: int) -> None:
+        """번호표를 특정 값으로 맞춘다.
+
+        마이그레이션은 ID 를 JSON 에서 그대로 가져오므로 번호표를 건드리지
+        않는다. 그대로 두면 다음에 만드는 TC 가 001 을 받아 이미 쓰인 번호와
+        부딪힌다.
+        """
+        db = self._db()
+        db.execute("INSERT OR REPLACE INTO tc_seq (content, last) VALUES (?, ?)",
+                   (content, last))
+        db.commit()
+
     def replace_generated(
         self,
         content: str,
@@ -440,11 +466,17 @@ def testcase_hash(tc: TestCase) -> str:
 
     id는 저장 시 부여되는 것이고 origin은 메타데이터라, 둘 중 하나가 달라졌다고
     "사용자가 고쳤다"로 볼 수 없다. 사람이 실제로 고치는 것은 제목·절차·기대결과다.
+
+    `category_sub` 도 반드시 들어가야 한다 — `title` 이 더 이상 쓰이지 않는
+    지금은 그 자리를 소분류가 대신한다. 소분류가 형제 케이스를 구분하는
+    유일한 이름인데 해시에서 빠지면, 소분류만 고친 사람의 편집이 안 보여
+    `replace_generated` 가 다음 재생성 때 조용히 지워 버린다.
     """
     payload = json.dumps(
         {
             "category_major": tc.category_major,
             "category_minor": tc.category_minor,
+            "category_sub": tc.category_sub,
             "title": tc.title,
             "precondition": tc.precondition,
             "steps": tc.steps,
