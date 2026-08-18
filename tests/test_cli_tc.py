@@ -505,6 +505,36 @@ def test_replaced_count_excludes_preserved_user_testcases(stdin_text, ready, cap
     assert {t.category_sub for t in _stored(ready)} == {"사람이 추가", "새 생성분"}
 
 
+def test_add_without_a_code_refuses_before_deleting_existing_rows(cfg_env, stdin_text, capsys, make_tc):
+    """코드 없는 컨텐츠에 `tc add` 를 다시 부르면, 델리트가 시작되기 전에
+    거절해야 한다 (Bug A) — 그리고 그 메시지는 `KeyError` 원문이 아니라 우리
+    문구여야 한다.
+
+    `ready` 픽스처는 항상 `--code PARTY` 로 만들어져 이 경로를 재현하지
+    못한다 — 여기서는 코드 없이 직접 `slot init` 하고, 기존 행은 (코드가
+    있어야 발급되는) 자동 id 대신 명시적 id 로 저장소에 직접 넣는다 —
+    마스터 시절 DB에 이미 있던 행을 흉내낸 것이다.
+    """
+    main(["slot", "init", "파티편성", "--game", "starrail"])   # --code 없음
+    main(["slot", "set", "파티편성", "core_action", "--status", "filled",
+          "--value", "파티를 짜고 적용한다"])
+    with KnowledgeStore(cfg_env / "starrail.db") as st:
+        st.add_testcase("파티편성", "정상 경로",
+                         make_tc(id="tc_old0", category_sub="케이스0"), ["core_action"])
+        st.add_testcase("파티편성", "정상 경로",
+                         make_tc(id="tc_old1", category_sub="케이스1"), ["core_action"])
+    capsys.readouterr()
+
+    stdin_text(_payload())
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "interview", "--json", "-"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "--code" in out
+    assert "KeyError" not in out           # 날 예외가 아니라 우리 메시지여야 한다
+    assert sorted(t.id for t in _stored(cfg_env)) == ["tc_old0", "tc_old1"]
+
+
 def test_add_stores_inferred_origin(stdin_text, ready, monkeypatch):
     stdin_text(_payload())
     main(["tc", "add", "파티편성", "--family", "정상 경로",

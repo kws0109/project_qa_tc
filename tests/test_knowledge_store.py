@@ -293,6 +293,36 @@ def test_adding_a_testcase_without_a_code_is_refused(tmp_path, make_tc):
     assert "--code" in str(e.value.args[0])
 
 
+def test_replace_generated_without_a_code_refuses_before_deleting_existing_rows(tmp_path, make_tc):
+    """코드 없는 컨텐츠에 `replace_generated` 를 다시 부르면, 델리트가 시작
+    되기 전에 거절해야 한다 (Bug A).
+
+    위 테스트(`test_adding_a_testcase_without_a_code_is_refused`)는 **빈**
+    컨텐츠로 `add_testcase` 를 직접 불러 이 순서를 검증하지 못한다 —
+    `replace_generated` 의 삭제 루프를 아예 지나가지 않기 때문이다. 실측
+    재현: 마스터 시절 DB는 `_ensure_code_column` 이 `code=''` 로 백필하고,
+    거기서 `tc add` 를 다시 부르면 이 브랜치의 `_next_tc_id` 가 삽입 루프
+    한가운데서 `KeyError` 를 던졌다 — 그런데 그 시점엔 이미 기존 2건이
+    DELETE + COMMIT 으로 지워진 뒤였다(재현: `['tc_old0','tc_old1']` →
+    `[]`, 삽입 0건, rc=1). 여기서는 기존 행이 그대로 남아 있어야 한다.
+    """
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("파티편성", game="g", types=[])  # --code 없음
+        old0 = make_tc(id="tc_old0", category_sub="케이스0")
+        old1 = make_tc(id="tc_old1", category_sub="케이스1")
+        st.add_testcase("파티편성", "정상 경로", old0, ["core_action"])
+        st.add_testcase("파티편성", "정상 경로", old1, ["core_action"])
+
+        new_case = make_tc(category_sub="새 케이스")  # id 없음 → 코드가 있어야 발급 가능
+        with pytest.raises(KeyError) as e:
+            st.replace_generated("파티편성", "정상 경로", [new_case], ["core_action"])
+        assert "--code" in str(e.value.args[0])
+
+        # 거절됐으니 기존 두 건이 그대로 살아 있어야 한다 — 지워진 뒤에
+        # 실패한 것이 아니라, 지우기 전에 실패한 것이다.
+        assert sorted(t.id for t in st.testcases("파티편성")) == ["tc_old0", "tc_old1"]
+
+
 def test_an_old_database_without_the_code_column_still_opens(tmp_path):
     """첫 실사용으로 만들어진 DB 에는 `contents.code` 가 없다."""
     import sqlite3

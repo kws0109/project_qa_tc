@@ -488,9 +488,17 @@ def cmd_tc_add(args: argparse.Namespace, cfg: AppConfig) -> int:
                 rationale=str(item.get("rationale", "")),
             ))
 
-        added, kept, deleted = store.replace_generated(
-            args.content, args.family, cases, [plan.slot_key]
-        )
+        try:
+            added, kept, deleted = store.replace_generated(
+                args.content, args.family, cases, [plan.slot_key]
+            )
+        except KeyError as exc:
+            # 코드 없는 컨텐츠 (Bug A) — `replace_generated` 가 아무것도 지우기
+            # 전에 거절한다. `str(KeyError(...))` 는 따옴표로 감싸는 repr 이라
+            # `.args[0]` 로 원문 메시지만 꺼낸다 (다른 `except KeyError` 핸들러와
+            # 같은 관례).
+            _p(f"오류: {exc.args[0]}")
+            return 1
     finally:
         store.close()
 

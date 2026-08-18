@@ -155,3 +155,38 @@ def test_replace_generated_only_touches_named_family(make_tc, store):
     store.add_testcase("파티편성", "경계값", make_tc(title="경계값 것"), ["constraints"])
     store.replace_generated("파티편성", "정상 경로", [make_tc(title="신규")], ["core_action"])
     assert "경계값 것" in {t.title for t in store.testcases("파티편성")}
+
+
+def test_replace_generated_rolls_back_deletes_if_insertion_fails_partway(make_tc, store, monkeypatch):
+    """삭제와 삽입은 한 트랜잭션이어야 한다 (Bug A, 원자성).
+
+    Bug A·B 의 거절은 둘 다 어떤 행도 지우기 전에 일어나므로, 그 두 경로
+    자체는 이 원자성을 시험하지 못한다 — 이 테스트는 삽입 루프 한가운데서
+    나는 (코드 없음·중복 외의) **다른** 예외로 원자성만 따로 겨냥한다.
+    실제로 이런 예외가 나면(예: 예상 못 한 버그), 원자성이 없던 예전
+    구현은 이미 지운 행만 확정해 계열을 비운 채로 끝났다.
+    """
+    store.add_testcase("파티편성", "정상 경로", make_tc(category_sub="A"), ["core_action"])
+    store.add_testcase("파티편성", "정상 경로", make_tc(category_sub="B"), ["core_action"])
+
+    calls = {"n": 0}
+    original = type(store)._insert_testcase
+
+    def flaky(self, content, family, tc, slot_keys):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("삽입 도중의 임의의 실패")
+        return original(self, content, family, tc, slot_keys)
+
+    monkeypatch.setattr(type(store), "_insert_testcase", flaky)
+
+    with pytest.raises(RuntimeError):
+        store.replace_generated(
+            "파티편성", "정상 경로",
+            [make_tc(category_sub="C"), make_tc(category_sub="D")],
+            ["core_action"],
+        )
+
+    # 두 기존 행을 지우는 DELETE 는 실제로 실행됐지만(원자성이 없다면
+    # 여기서 사라졌을 것이다), 트랜잭션이 롤백돼 그대로 남아 있어야 한다.
+    assert {t.category_sub for t in store.testcases("파티편성")} == {"A", "B"}

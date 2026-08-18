@@ -291,37 +291,25 @@ class KnowledgeStore:
         살아 있는 행의 최대값을 쓰지 않는 이유: 전부 지운 뒤 새로 만들면 001
         로 되돌아가, 지워진 TC 를 가리키던 번호가 다른 TC 를 가리키게 된다.
         그래서 마지막 번호를 `tc_seq` 에 따로 기억한다.
+
+        **커밋은 여기서 하지 않는다.** 호출자(`add_testcase`/`replace_generated`)가
+        번호표 갱신과 TC 저장(또는 그 앞의 삭제)을 한 트랜잭션으로 묶는다 —
+        여기서 커밋하면 `replace_generated` 의 삭제까지 앞당겨 확정시켜, 그
+        뒤 삽입이 실패해도 삭제만 살아남는다(Bug A 의 원자성 부분).
         """
-        code = self.content_code(content)
-        if not code:
-            raise KeyError(
-                f"'{content}'에 컨텐츠 코드가 없어 TC ID를 만들 수 없습니다. "
-                f"'qatc slot init {content} --code <영문대문자약어>' 로 먼저 정하세요."
-            )
+        code = self._require_content_code(content)
         db = self._db()
         row = db.execute("SELECT last FROM tc_seq WHERE content = ?", (content,)).fetchone()
         nxt = (row["last"] if row else 0) + 1
         db.execute("INSERT OR REPLACE INTO tc_seq (content, last) VALUES (?, ?)",
                    (content, nxt))
-        db.commit()
         return f"TC_{code}_{nxt:03d}"
 
     def add_testcase(
         self, content: str, family: str, tc: TestCase, slot_keys: Sequence[str]
     ) -> TestCase:
         """TC를 저장한다. `id` 가 비어 있으면 부여한다."""
-        if not tc.id:
-            tc.id = self._next_tc_id(content)
-        self._db().execute(
-            "INSERT OR REPLACE INTO testcases"
-            " (id, content, family, generated_hash, slot_keys, row)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                tc.id, content, family, testcase_hash(tc),
-                json.dumps(list(slot_keys), ensure_ascii=False),
-                json.dumps(tc.to_row(), ensure_ascii=False),
-            ),
-        )
+        tc = self._insert_testcase(content, family, tc, slot_keys)
         self._db().commit()
         return tc
 
@@ -424,41 +412,99 @@ class KnowledgeStore:
         `(added, kept)` 순서는 CLI 가 언패킹해서 쓰는 계약이라 그대로 두고
         삭제 수를 뒤에 붙였다.
 
+        **아무것도 지우기 전에 코드 없음을 거절한다** (Bug A). 예전에는 이
+        검사가 `_next_tc_id` 안, 즉 삽입 루프 한가운데에만 있어서, 코드 없는
+        컨텐츠에 `tc add` 를 다시 부르면 아래 삭제 루프가 끝나고 커밋까지 된
+        **다음에** 이 검사가 실패했다(실측: DELETE → COMMIT → raise → 삽입
+        0건 — 사용자에게는 `오류: KeyError: ...` 한 줄과 함께 계열이 조용히
+        비워진 결과만 남았다).
+
+        **삭제와 삽입을 한 트랜잭션으로 묶는다** (Bug A 의 원자성 부분, 별도
+        마이너 리뷰에서도 같은 비원자성이 지적됐다). 예전에는 삭제 루프 뒤에
+        `db.commit()` 이 있어, 그 다음 삽입 루프 도중 아무 예외든 나면 삭제만
+        확정된 채 끝났다. 지금은 실패하면 `rollback()` 하고 다시 던진다 —
+        `KnowledgeStore.close()` 가 예외와 무관하게 항상 커밋하므로, 여기서
+        직접 롤백하지 않으면 그 무조건 커밋이 부분 삭제를 그대로 확정시켜
+        버린다.
+
         :returns: (추가한 수, 보존한 수, 지운 수)
         """
+        self._require_content_code(content)          # Bug A: 지우기 전에 거절
+
         db = self._db()
-        rows = db.execute(
-            "SELECT id, generated_hash, row FROM testcases WHERE content = ? AND family = ?",
-            (content, family),
-        ).fetchall()
-
-        # 같은 (중분류, 소분류) 면 같은 TC 로 본다 - 본문을 다시 써도 번호를
-        # 물려주기 위해서다. 소분류가 케이스 이름이 되면서 가능해진 대조다.
-        inherited: dict[tuple[str, str], str] = {}
-        for r in rows:
-            old = TestCase.from_row(json.loads(r["row"]))
-            inherited[(old.category_minor, old.category_sub)] = r["id"]
-
         kept = 0
         deleted = 0
-        for r in rows:
-            tc = TestCase.from_row(json.loads(r["row"]))
-            edited = testcase_hash(tc) != r["generated_hash"]
-            if tc.origin is TCOrigin.USER or edited:
-                kept += 1
-                # 이 TC 는 아직 살아 있다 — 번호를 새 배치에 물려주면 두 TC 가
-                # 같은 id 를 갖게 된다. 물려줄 후보에서 뺀다.
-                inherited.pop((tc.category_minor, tc.category_sub), None)
-                continue
-            db.execute("DELETE FROM testcases WHERE id = ?", (r["id"],))
-            deleted += 1
-        db.commit()
+        try:
+            rows = db.execute(
+                "SELECT id, generated_hash, row FROM testcases WHERE content = ? AND family = ?",
+                (content, family),
+            ).fetchall()
 
-        for tc in cases:
-            if not tc.id:
-                tc.id = inherited.get((tc.category_minor, tc.category_sub), "")
-            self.add_testcase(content, family, tc, slot_keys)
+            # 같은 (중분류, 소분류) 면 같은 TC 로 본다 - 본문을 다시 써도 번호를
+            # 물려주기 위해서다. 소분류가 케이스 이름이 되면서 가능해진 대조다.
+            inherited: dict[tuple[str, str], str] = {}
+            for r in rows:
+                old = TestCase.from_row(json.loads(r["row"]))
+                inherited[(old.category_minor, old.category_sub)] = r["id"]
+
+            for r in rows:
+                tc = TestCase.from_row(json.loads(r["row"]))
+                edited = testcase_hash(tc) != r["generated_hash"]
+                if tc.origin is TCOrigin.USER or edited:
+                    kept += 1
+                    # 이 TC 는 아직 살아 있다 — 번호를 새 배치에 물려주면 두 TC 가
+                    # 같은 id 를 갖게 된다. 물려줄 후보에서 뺀다.
+                    inherited.pop((tc.category_minor, tc.category_sub), None)
+                    continue
+                db.execute("DELETE FROM testcases WHERE id = ?", (r["id"],))
+                deleted += 1
+
+            for tc in cases:
+                if not tc.id:
+                    tc.id = inherited.get((tc.category_minor, tc.category_sub), "")
+                self._insert_testcase(content, family, tc, slot_keys)
+        except Exception:
+            db.rollback()
+            raise
+        db.commit()
         return len(cases), kept, deleted
+
+    def _require_content_code(self, content: str) -> str:
+        """`content` 의 TC 코드를 돌려준다. 없으면 지어내지 않고 거절한다.
+
+        `_next_tc_id`(개별 저장)와 `replace_generated`(계열 갈아끼우기) 양쪽이
+        쓴다. 후자는 **아무것도 지우기 전에** 이 검사를 통과해야 한다.
+        """
+        code = self.content_code(content)
+        if not code:
+            raise KeyError(
+                f"'{content}'에 컨텐츠 코드가 없어 TC ID를 만들 수 없습니다. "
+                f"'qatc slot init {content} --code <영문대문자약어>' 로 먼저 정하세요."
+            )
+        return code
+
+    def _insert_testcase(
+        self, content: str, family: str, tc: TestCase, slot_keys: Sequence[str]
+    ) -> TestCase:
+        """TC 한 건을 쓴다 (커밋 없음).
+
+        `add_testcase`(단건 저장, 즉시 커밋)와 `replace_generated`(삭제+삽입을
+        한 트랜잭션으로 묶어야 하는 배치 교체) 양쪽이 이 위에서 각자 트랜잭션
+        경계를 정한다 — 여기서 커밋하면 배치 쪽이 원자적일 수 없다.
+        """
+        if not tc.id:
+            tc.id = self._next_tc_id(content)
+        self._db().execute(
+            "INSERT OR REPLACE INTO testcases"
+            " (id, content, family, generated_hash, slot_keys, row)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                tc.id, content, family, testcase_hash(tc),
+                json.dumps(list(slot_keys), ensure_ascii=False),
+                json.dumps(tc.to_row(), ensure_ascii=False),
+            ),
+        )
+        return tc
 
 
 def testcase_hash(tc: TestCase) -> str:
