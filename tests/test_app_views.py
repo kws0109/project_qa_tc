@@ -69,6 +69,25 @@ def test_the_tree_counts_by_family_not_by_category_minor(cfg):
     assert fams["경계값"]["tc_count"] == 1, "계열이 아니라 중분류로 셌습니다"
 
 
+def test_tree_marks_withdrawal_by_family_not_by_category_minor(cfg):
+    """트리의 `withdrawn` 표시도 계열 단위여야 한다.
+
+    `tc_count` 집계와 `withdrawn` 판정은 `tree()` 안에서 서로 다른 코드
+    경로다 — 한쪽을 계열로 옮겨도 다른 쪽이 중분류에 남아 있을 수 있다.
+    `category_minor` 로 판정하면 이 TC 는 "신규 계정 연동" 으로 잡혀
+    "경계값" 계열은 철회로 보이지 않는다 — 근거가 비어 있는데도 화면은
+    괜찮다고 말하는 셈이다.
+    """
+    _seed(cfg)
+    with KnowledgeStore(cfg.knowledge_path / "starrail.db") as st:
+        tc = _tc(title="비활성 유지", family="경계값")
+        tc.category_minor = "신규 계정 연동"
+        st.add_testcase("파티편성", "경계값", tc, ["constraints"])
+
+    fams = {f["family"]: f for f in tree(cfg)["games"][0]["contents"][0]["families"]}
+    assert fams["경계값"]["withdrawn"] is True, "계열이 아니라 중분류로 철회를 판정했습니다"
+
+
 def test_withdrawal_is_judged_by_family_not_by_category_minor(cfg):
     """근거 철회 판정도 계열 단위다 — 중분류로 판정하면 엉뚱한 TC 가 표시된다."""
     _seed(cfg)
