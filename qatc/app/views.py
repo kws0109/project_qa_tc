@@ -147,7 +147,12 @@ def content_detail(cfg: AppConfig, game: str, name: str) -> dict:
             for s in slots
         ],
         "testcases": [
-            {"id": t.id, "family": t.family, "title": t.title,
+            {"id": t.id, "family": t.family,
+             "middle": t.category_minor,
+             # 마이그레이션 전의 행은 소분류가 비어 있다. 그때는 제목이
+             # 그 자리를 대신한다 - 화면에서 이름 없는 TC 가 되면 고를 수 없다.
+             "sub": t.category_sub or t.title,
+             "title": t.title,
              "kind": t.kind.value, "priority": t.priority.value,
              "origin": t.origin.value, "precondition": t.precondition,
              "steps": list(t.steps), "expected": list(t.expected),

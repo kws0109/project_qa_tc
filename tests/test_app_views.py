@@ -439,3 +439,23 @@ def test_tree_reports_base_total_alongside_total(cfg):
     c = tree(cfg)["games"][0]["contents"][0]
     assert c["total"] == 15
     assert c["base_total"] == len(BASE_SLOTS), "추가 슬롯이 기준선까지 밀어 올렸습니다"
+
+
+def test_content_detail_carries_the_hierarchy(cfg):
+    _seed(cfg)
+    with KnowledgeStore(cfg.knowledge_path / "starrail.db") as st:
+        tc = _tc(title="옛 제목", family="경계값")
+        tc.category_minor, tc.category_sub = "신규 계정 연동", "비밀번호 불일치"
+        st.add_testcase("파티편성", "경계값", tc, ["constraints"])
+
+    row = [t for t in content_detail(cfg, "starrail", "파티편성")["testcases"]
+           if t["sub"] == "비밀번호 불일치"][0]
+    assert row["middle"] == "신규 계정 연동"
+    assert row["family"] == "경계값"
+
+
+def test_an_old_testcase_without_a_sub_falls_back_to_its_title(cfg):
+    """마이그레이션 전의 행도 화면에서 이름을 잃지 않아야 한다."""
+    _seed(cfg)     # `_seed` 가 넣는 TC 는 소분류가 없다
+    rows = content_detail(cfg, "starrail", "파티편성")["testcases"]
+    assert rows[0]["sub"] == rows[0]["title"]

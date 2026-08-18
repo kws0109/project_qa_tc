@@ -1143,3 +1143,25 @@ def test_the_capture_button_is_disabled_while_capturing(app):
 def test_the_stylesheet_draws_the_capture_button(app):
     css = app.test_client().get("/static/app.css").get_data(as_text=True)
     assert "#capture-btn" in css
+
+
+def test_the_tree_labels_testcases_by_sub_not_by_title(app):
+    """화면이 소분류로 라벨링해야 새 계층이 사용자에게 보인다."""
+    import re
+
+    js = re.sub("//[^" + chr(10) + "]*", "",
+                app.test_client().get("/static/app.js").get_data(as_text=True))
+    m = re.search(r"function renderTcRow\([^)]*\)\s*\{([\s\S]*?)" + chr(10) + r"\}", js)
+    assert m, "renderTcRow 를 찾을 수 없습니다"
+    assert "tc.sub" in m.group(1), "TC 라벨이 소분류를 쓰지 않습니다"
+
+
+def test_the_review_panel_shows_the_hierarchy_instead_of_a_title(app):
+    import re
+
+    js = re.sub("//[^" + chr(10) + "]*", "",
+                app.test_client().get("/static/app.js").get_data(as_text=True))
+    m = re.search(r"function renderReview\([^)]*\)\s*\{([\s\S]*?)" + chr(10) + r"\}", js)
+    assert m, "renderReview 를 찾을 수 없습니다"
+    body = m.group(1)
+    assert "tc.middle" in body and "tc.sub" in body

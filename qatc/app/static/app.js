@@ -214,10 +214,11 @@ function renderTcRow(tc) {
   const selected = state.selectedTcId === tc.id;
   let cls = "tc" + (selected ? " selected" : "");
   if (tc.withdrawn) cls += " tc-withdrawn";
+  // 소분류가 케이스 이름이다. 백엔드가 옛 행에 대해서는 제목으로 채워 준다.
   const tcEl = el("div", {
     class: cls,
-    text: tc.title,
-    title: tc.title,
+    text: tc.sub,
+    title: tc.sub,
     onclick: (e) => {
       e.stopPropagation(); // 컨텐츠 재선택으로 번지지 않게
       selectTc(tc.id);
@@ -322,7 +323,8 @@ function renderReview() {
   bodyEl.hidden = false;
   bodyEl.innerHTML = "";
 
-  bodyEl.appendChild(el("h2", { class: "tc-title", text: tc.title }));
+  // 제목 대신 계층을 보여준다 — 중분류(화면) › 소분류(케이스 이름).
+  bodyEl.appendChild(el("div", { class: "tc-path", text: `${tc.middle} › ${tc.sub}` }));
 
   const meta = el("div", { class: "tc-meta" });
   meta.appendChild(el("span", { class: "tag", text: tc.kind }));
