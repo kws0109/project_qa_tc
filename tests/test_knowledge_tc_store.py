@@ -51,6 +51,21 @@ def test_testcases_roundtrip(make_tc, store):
     assert got[0].priority is Priority.HIGH
 
 
+def test_stored_testcases_come_back_with_their_family(tmp_path, make_tc):
+    """`family` 는 `row` JSON 이 아니라 컬럼이 진실이다.
+
+    옛 행에는 `row` 안에 `family` 키가 아예 없다. 컬럼에서 채우면 옛 행도
+    그대로 읽히고, 컬럼과 `row` 가 어긋날 여지도 없어진다.
+    """
+    from qatc.knowledge.store import KnowledgeStore
+
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("c", game="g", types=[])
+        st.add_testcase("c", "경계값", make_tc(title="T"), ["constraints"])
+        got = st.testcases("c")
+    assert [t.family for t in got] == ["경계값"]
+
+
 def test_testcases_filter_by_family(make_tc, store):
     store.add_testcase("파티편성", "정상 경로", make_tc(title="A"), ["core_action"])
     store.add_testcase("파티편성", "경계값", make_tc(title="B"), ["constraints"])

@@ -93,10 +93,10 @@ def tree(cfg: AppConfig) -> dict:
                 slots = st.slots(c.name)
                 cases = st.testcases(c.name)
                 planned, skipped = plan_families(slots)
-                withdrawn = withdrawn_families(slots, {t.category_minor for t in cases})
+                withdrawn = withdrawn_families(slots, {t.family for t in cases})
                 counts: dict[str, int] = {}
                 for t in cases:
-                    counts[t.category_minor] = counts.get(t.category_minor, 0) + 1
+                    counts[t.family] = counts.get(t.family, 0) + 1
                 fams = [
                     {"family": fp.family, "planned": True,
                      "tc_count": counts.get(fp.family, 0),
@@ -138,7 +138,7 @@ def content_detail(cfg: AppConfig, game: str, name: str) -> dict:
         slots = st.slots(name)
         cases = st.testcases(name)
         meta = st.testcase_meta(name)          # id -> (slot_keys, generated_hash)
-    withdrawn = withdrawn_families(slots, {t.category_minor for t in cases})
+    withdrawn = withdrawn_families(slots, {t.family for t in cases})
     return {
         "name": c.name, "game": game, "types": list(c.types),
         "slots": [
@@ -147,13 +147,13 @@ def content_detail(cfg: AppConfig, game: str, name: str) -> dict:
             for s in slots
         ],
         "testcases": [
-            {"id": t.id, "family": t.category_minor, "title": t.title,
+            {"id": t.id, "family": t.family, "title": t.title,
              "kind": t.kind.value, "priority": t.priority.value,
              "origin": t.origin.value, "precondition": t.precondition,
              "steps": list(t.steps), "expected": list(t.expected),
              "rationale": t.rationale, "slot_keys": meta[t.id][0],
              "edited": testcase_hash(t) != meta[t.id][1],
-             "withdrawn": t.category_minor in withdrawn}
+             "withdrawn": t.family in withdrawn}
             for t in cases
         ],
     }

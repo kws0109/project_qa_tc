@@ -123,11 +123,15 @@ def make_tc():
     """
 
     def _make(title: str = "제목", origin: TCOrigin = TCOrigin.INTERVIEW,
-              id: str = "", **kw) -> TestCase:
+              id: str = "", family: str = "정상 경로", **kw) -> TestCase:
         return TestCase(
             id=id,
             category_major="파티 편성",
             category_minor="정상 경로",
+            # 지금은 category_minor 와 같은 값이다 — 실제 DB 라면 항상 그렇다.
+            # family 를 따로 받는 이유는 "다른 계열의 TC" 를 흉내 내려는
+            # 테스트가 category_minor 만 바꾸고 family 는 잊는 사고를 막기 위함.
+            family=family,
             title=title,
             precondition="파티 편성 화면",
             steps=["파티 적용을 누른다"],

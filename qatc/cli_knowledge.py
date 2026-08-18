@@ -485,7 +485,7 @@ def cmd_tc_list(args: argparse.Namespace, cfg: AppConfig) -> int:
         store.close()
 
     _, skipped = plan_families(slots)
-    withdrawn = withdrawn_families(slots, {tc.category_minor for tc in cases})
+    withdrawn = withdrawn_families(slots, {tc.family for tc in cases})
 
     by_kind: dict[str, int] = {}
     for tc in cases:
@@ -494,8 +494,8 @@ def cmd_tc_list(args: argparse.Namespace, cfg: AppConfig) -> int:
     _p(f"TC {len(cases)}건" + (f" ({summary})" if summary else ""))
 
     for tc in cases:
-        mark = "  ⚠ 근거 철회됨" if tc.category_minor in withdrawn else ""
-        _p(f"  [{tc.category_minor}] {tc.title}  ({tc.origin.value}){mark}")
+        mark = "  ⚠ 근거 철회됨" if tc.family in withdrawn else ""
+        _p(f"  [{tc.family}] {tc.title}  ({tc.origin.value}){mark}")
 
     if withdrawn:
         _p("\n⚠ 근거가 철회된 계열이 있습니다 — TC는 지우지 않았습니다")
@@ -576,7 +576,7 @@ def cmd_export(args: argparse.Namespace, cfg: AppConfig) -> int:
         store.close()
 
     _, skipped = plan_families(slots)
-    withdrawn = withdrawn_families(slots, {tc.category_minor for tc in cases})
+    withdrawn = withdrawn_families(slots, {tc.family for tc in cases})
 
     out = (
         Path(args.out) if args.out

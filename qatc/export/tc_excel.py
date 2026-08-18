@@ -74,7 +74,7 @@ def _sheet_testcases(
             "\n".join(f"{i}. {s}" for i, s in enumerate(tc.steps, 1)),
             "\n".join(f"- {s}" for s in tc.expected),
             tc.priority.value, tc.kind.value, tc.origin.value, tc.rationale,
-            _EVIDENCE_WITHDRAWN if tc.category_minor in withdrawn else _EVIDENCE_LIVE,
+            _EVIDENCE_WITHDRAWN if tc.family in withdrawn else _EVIDENCE_LIVE,
         ]
         for col, v in enumerate(values, start=1):
             cell = ws.cell(row=r, column=col, value=clean_cell(str(v)))
@@ -122,7 +122,7 @@ def _sheet_summary(
         ("출처별", ", ".join(f"{k} {v}" for k, v in sorted(by_origin.items())) or "-"),
         ("미확인 항목", str(len(skipped))),
         ("근거 철회된 TC",
-         str(sum(1 for tc in cases if tc.category_minor in withdrawn))),
+         str(sum(1 for tc in cases if tc.family in withdrawn))),
         ("읽는 방법",
          "출처 '인터뷰'는 담당자가 진술한 내용, '추론됨'은 진술에서 도출한 것입니다. "
          "'추론됨'은 실제로 그렇게 동작하는지 검증되지 않았습니다. "

@@ -19,7 +19,7 @@ def cfg(tmp_path):
 
 
 def _tc(title="TC", family="정상 경로"):
-    return TestCase(id="", category_minor=family, title=title,
+    return TestCase(id="", category_minor=family, family=family, title=title,
                     steps=["1"], expected=["e"],
                     priority=Priority.HIGH, kind=TCKind.HAPPY_PATH,
                     origin=TCOrigin.INTERVIEW)
@@ -32,6 +32,55 @@ def _seed(cfg, game="starrail", name="파티편성"):
         st.set_slot(name, "cost", SlotStatus.UNKNOWN)
         st.add_testcase(name, "정상 경로", _tc(), ["core_action"])
     return name
+
+
+def test_family_is_read_from_the_column_not_from_category_minor(cfg):
+    """계열은 `category_minor` 가 아니라 DB 의 `family` 컬럼에서 온다.
+
+    이 둘은 지금 같은 값이지만 곧 갈라진다. 갈라진 뒤에도 트리·철회 판정이
+    맞으려면 소비자가 **지금** 옮겨져 있어야 한다. 그래서 두 값이 다른 TC 를
+    일부러 만들어, `category_minor` 를 계열로 착각하는 코드를 실패시킨다.
+    """
+    _seed(cfg)
+    with KnowledgeStore(cfg.knowledge_path / "starrail.db") as st:
+        tc = _tc(title="비활성 유지", family="경계값")
+        tc.category_minor = "신규 계정 연동"      # 계열이 아니라 메뉴 이름
+        st.add_testcase("파티편성", "경계값", tc, ["constraints"])
+
+    got = [t for t in st_testcases(cfg) if t.title == "비활성 유지"][0]
+    assert got.family == "경계값"
+    assert got.category_minor == "신규 계정 연동"
+
+
+def st_testcases(cfg):
+    with KnowledgeStore(cfg.knowledge_path / "starrail.db") as st:
+        return st.testcases("파티편성")
+
+
+def test_the_tree_counts_by_family_not_by_category_minor(cfg):
+    """트리의 계열별 TC 개수가 메뉴 이름으로 세어지면 안 된다."""
+    _seed(cfg)
+    with KnowledgeStore(cfg.knowledge_path / "starrail.db") as st:
+        tc = _tc(title="비활성 유지", family="경계값")
+        tc.category_minor = "신규 계정 연동"
+        st.add_testcase("파티편성", "경계값", tc, ["constraints"])
+
+    fams = {f["family"]: f for f in tree(cfg)["games"][0]["contents"][0]["families"]}
+    assert fams["경계값"]["tc_count"] == 1, "계열이 아니라 중분류로 셌습니다"
+
+
+def test_withdrawal_is_judged_by_family_not_by_category_minor(cfg):
+    """근거 철회 판정도 계열 단위다 — 중분류로 판정하면 엉뚱한 TC 가 표시된다."""
+    _seed(cfg)
+    with KnowledgeStore(cfg.knowledge_path / "starrail.db") as st:
+        tc = _tc(title="비활성 유지", family="경계값")
+        tc.category_minor = "신규 계정 연동"
+        st.add_testcase("파티편성", "경계값", tc, ["constraints"])
+        st.set_slot("파티편성", "constraints", SlotStatus.EMPTY)   # 근거를 다시 연다
+
+    detail = content_detail(cfg, "starrail", "파티편성")
+    row = [t for t in detail["testcases"] if t["title"] == "비활성 유지"][0]
+    assert row["withdrawn"] is True
 
 
 def test_tree_lists_games_and_contents(cfg):

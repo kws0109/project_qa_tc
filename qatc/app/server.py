@@ -231,7 +231,7 @@ def create_app(cfg: AppConfig) -> Flask:
             return jsonify({"error": str(exc)}), 404
 
         _, skipped = plan_families(slots)
-        withdrawn = withdrawn_families(slots, {tc.category_minor for tc in cases})
+        withdrawn = withdrawn_families(slots, {tc.family for tc in cases})
         # `game`·`content` 는 둘 다 요청 본문에서 온다. `_safe_filename_part`
         # 가 구분자를 지우지만, 그 함수는 "정리" 지 "봉쇄" 가 아니다 — 정말
         # 지식 폴더 안에 떨어지는지는 만들어진 경로로 직접 확인한다. 결함 3

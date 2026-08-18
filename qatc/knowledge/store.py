@@ -282,13 +282,20 @@ class KnowledgeStore:
         self._db().commit()
 
     def testcases(self, content: str, family: str | None = None) -> list[TestCase]:
-        sql = "SELECT row FROM testcases WHERE content = ?"
+        sql = "SELECT row, family FROM testcases WHERE content = ?"
         args: list[str] = [content]
         if family is not None:
             sql += " AND family = ?"
             args.append(family)
         sql += " ORDER BY rowid"
-        return [TestCase.from_row(json.loads(r["row"])) for r in self._db().execute(sql, args)]
+        out = []
+        for r in self._db().execute(sql, args):
+            tc = TestCase.from_row(json.loads(r["row"]))
+            # 컬럼이 진실이다. `row` 안에 `family` 가 있든 없든(옛 행에는 없다)
+            # 여기서 덮어써 한 값만 남긴다.
+            tc.family = r["family"]
+            out.append(tc)
+        return out
 
     def testcase_meta(self, content: str) -> dict[str, tuple[list[str], str]]:
         """이 컨텐츠 TC 들의 `(slot_keys, generated_hash)` 를 id 로 찾는 표.

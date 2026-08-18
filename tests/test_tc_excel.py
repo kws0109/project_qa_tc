@@ -167,6 +167,7 @@ def test_skipped_sheet_still_says_no_tc_when_there_really_is_none(tmp_path):
 def test_summary_counts_withdrawn_testcases(make_tc, tmp_path):
     cases = [make_tc(title="철회된 것"), make_tc(title="살아 있는 것")]
     cases[1].category_minor = "경계값"
+    cases[1].family = "경계값"          # 철회 판정은 family 를 보므로 함께 바꾼다
     p = export_tc_excel("파티편성", cases, [], tmp_path / "out.xlsx",
                         withdrawn={"정상 경로"})
     ws = load_workbook(p)["요약"]
