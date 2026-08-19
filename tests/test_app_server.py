@@ -175,8 +175,16 @@ def test_the_backend_never_writes_to_the_knowledge_db(app):
     """
     import pathlib
 
+    # 이 목록은 이 브랜치가 늘린 쓰기 메서드를 따라가지 못하고 있었다 —
+    # `set_content_code`(Bug C 가드) · `clear_testcases`/`set_tc_seq`(마이그레이션
+    # 전용 통짜 갈아엎기) · `_insert_testcase`(`replace_generated` 가 내부에서
+    # 쓰는 단건 삽입, 언더스코어 접두라 "테스트 전용" 처럼 보이지만 실제
+    # 쓰기다)는 전부 이 브랜치의 커밋(f6d4ae3·b38a2a6·e9b7a88)에서 새로
+    # 생겼는데, 이름 대조 목록은 그 전 것(4f3b8a2 무렵)에 멈춰 있었다.
     write_methods = ("add_testcase", "set_slot", "init_content",
-                      "replace_generated", "add_slot", "update_testcase_row")
+                      "replace_generated", "add_slot", "update_testcase_row",
+                      "set_content_code", "clear_testcases", "set_tc_seq",
+                      "_insert_testcase")
     guarded_files = [*pathlib.Path("qatc/app").rglob("*.py"), pathlib.Path("qatc/cli.py")]
 
     for path in guarded_files:

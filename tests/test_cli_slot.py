@@ -580,3 +580,29 @@ def test_changing_the_code_of_an_existing_content_is_refused(cfg_env, capsys):
     rc = main(["slot", "init", "로그인", "--game", "starrail", "--code", "SIGNIN"])
     assert rc == 1
     assert "이미 발급" in capsys.readouterr().out
+
+
+def test_a_taken_code_on_an_existing_content_leaves_its_types_unchanged(cfg_env, capsys):
+    """기존 컨텐츠에 이미 다른 컨텐츠가 쓰는 코드로 `--code` 를 주면 명령은
+    실패해야 하고(rc=1), 함께 준 `--types` 확장도 커밋되면 안 된다.
+
+    `KnowledgeStore.close()` 는 예외와 무관하게 항상 커밋한다 — `init_content`
+    가 기존 컨텐츠의 `types` UPDATE 를 코드 검사보다 먼저 실행하면, 검사가
+    실패해 명령이 rc=1 로 끝나도 그 UPDATE 는 이미 커밋돼 있었다(부분 커밋
+    회귀). 검사를 UPDATE 보다 먼저 끝내야 실패한 명령이 DB 를 안 건드린다.
+    """
+    from qatc.knowledge.store import KnowledgeStore
+
+    main(["slot", "init", "로그인보상", "--game", "starrail", "--code", "LOGIN"])  # LOGIN 선점
+    main(["slot", "init", "로그인", "--game", "starrail", "--types", "가챠"])       # 코드 없음
+    with KnowledgeStore(cfg_env / "starrail.db") as st:
+        before = sorted(st.get_content("로그인").types)
+
+    rc = main(["slot", "init", "로그인", "--game", "starrail",
+               "--types", "편성", "--code", "LOGIN"])
+    assert rc == 1
+
+    with KnowledgeStore(cfg_env / "starrail.db") as st:
+        after = sorted(st.get_content("로그인").types)
+        assert after == before, "실패한 명령인데 types 가 바뀌었습니다 (부분 커밋)"
+        assert st.content_code("로그인") == ""

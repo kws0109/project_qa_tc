@@ -538,17 +538,24 @@ def test_add_without_a_code_refuses_before_deleting_existing_rows(cfg_env, stdin
 def test_add_refuses_a_batch_with_duplicate_middle_sub_pairs(stdin_text, ready, capsys):
     """배치 안에서 (중분류, 소분류) 가 겹치면 거절한다 (Bug B) — 조용히
     번호를 물려주면 나중 것이 앞의 것을 지우는데 rc=0 · "2건 저장" 만 찍힌다.
+
+    소분류 이름을 일부러 "중복"이 **아닌** 값으로 짓는다 — 예전 어서션
+    (`assert "중복" in out`)은 소분류 이름 자체가 "중복"이라 이 가드의
+    메시지가 실제로 찍혔는지와 무관하게 우연히 통과할 수 있었다(그 문자열은
+    가드 메시지 안에서 소분류 값을 그대로 인용하는 자리에도 나온다). 가드가
+    실제로 내는 고정 문구("이 배치에 두 번 있습니다")로 검사해야, 메시지가
+    아예 안 나가도록 지워버리는 회귀를 이 테스트가 놓치지 않는다.
     """
     dup = json.dumps({"testcases": [
-        {"middle": "파티 편성", "sub": "중복", "steps": ["s1"], "expected": ["e1"]},
-        {"middle": "파티 편성", "sub": "중복", "steps": ["s2"], "expected": ["e2"]},
+        {"middle": "파티 편성", "sub": "같은 케이스", "steps": ["s1"], "expected": ["e1"]},
+        {"middle": "파티 편성", "sub": "같은 케이스", "steps": ["s2"], "expected": ["e2"]},
     ]}, ensure_ascii=False)
     stdin_text(dup)
     rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
                "--origin", "interview", "--json", "-"])
     assert rc == 1
     out = capsys.readouterr().out
-    assert "중복" in out
+    assert "이 배치에 두 번 있습니다" in out   # 가드의 실제 메시지 — 소분류 값과 무관한 고정 문구
     assert "ValueError" not in out         # 날 예외가 아니라 우리 메시지여야 한다
     assert _stored(ready) == []            # 아무것도 저장되지 않았다
 

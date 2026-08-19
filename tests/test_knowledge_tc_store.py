@@ -190,3 +190,39 @@ def test_replace_generated_rolls_back_deletes_if_insertion_fails_partway(make_tc
     # 두 기존 행을 지우는 DELETE 는 실제로 실행됐지만(원자성이 없다면
     # 여기서 사라졌을 것이다), 트랜잭션이 롤백돼 그대로 남아 있어야 한다.
     assert {t.category_sub for t in store.testcases("파티편성")} == {"A", "B"}
+
+
+def test_replace_generated_rolls_back_deletes_on_keyboard_interrupt(make_tc, store, monkeypatch):
+    """`except Exception` 은 `KeyboardInterrupt` 를 놓친다.
+
+    `KeyboardInterrupt` 와 `SystemExit` 은 `Exception` 이 아니라 `BaseException`
+    만 상속한다 — 삽입 루프 한가운데서 Ctrl-C 가 들어오면, `except Exception`
+    으로 잡는 옛 구현은 그 예외를 그냥 통과시켜 롤백을 건너뛴다. 그러면 이미
+    실행된 DELETE 가 `KnowledgeStore.close()` 의 무조건 커밋을 타고 확정되어
+    계열이 통째로 비워진 채 남는다. 바로 위 테스트(`RuntimeError`)는
+    `Exception` 계열만 겨냥하므로 이 경로를 잡지 못한다 — `except Exception`
+    으로 되돌려도 그 테스트는 초록이다.
+    """
+    store.add_testcase("파티편성", "정상 경로", make_tc(category_sub="A"), ["core_action"])
+    store.add_testcase("파티편성", "정상 경로", make_tc(category_sub="B"), ["core_action"])
+
+    calls = {"n": 0}
+    original = type(store)._insert_testcase
+
+    def flaky(self, content, family, tc, slot_keys):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise KeyboardInterrupt()
+        return original(self, content, family, tc, slot_keys)
+
+    monkeypatch.setattr(type(store), "_insert_testcase", flaky)
+
+    with pytest.raises(KeyboardInterrupt):
+        store.replace_generated(
+            "파티편성", "정상 경로",
+            [make_tc(category_sub="C"), make_tc(category_sub="D")],
+            ["core_action"],
+        )
+
+    # KeyboardInterrupt 여도 DELETE 가 롤백돼 기존 두 행이 살아 있어야 한다.
+    assert {t.category_sub for t in store.testcases("파티편성")} == {"A", "B"}

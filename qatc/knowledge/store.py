@@ -191,21 +191,37 @@ class KnowledgeStore:
     def set_content_code(self, name: str, code: str) -> None:
         """컨텐츠에 TC ID 접두어를 단다.
 
-        형식·존재·중복을 **여기서** 검사한다. 예전에는 이 세 가지를
-        `cmd_slot_init` 만 (그것도 `init_content` 를 부르기 **전에**) 검사했다.
-        그런데 `apply_reclassification`(승인된 재분류 마이그레이션)은 이 메서드를
-        직접 불러 그 검사를 통째로 우회한다. 실측(Bug C): `로그인보상`이 먼저
-        `slot init --code LOGIN` 으로 LOGIN 을 선점해도(그 시점엔 `로그인`이
+        형식·존재·중복·기존코드 네 가지를 **여기서** 검사한다. 예전에는 앞의
+        세 가지를 `cmd_slot_init` 만 (그것도 `init_content` 를 부르기 **전에**)
+        검사했다. 그런데 `apply_reclassification`(승인된 재분류 마이그레이션)은
+        이 메서드를 직접 불러 그 검사를 통째로 우회한다. 실측(Bug C): `로그인보상`이
+        먼저 `slot init --code LOGIN` 으로 LOGIN 을 선점해도(그 시점엔 `로그인`이
         아직 코드가 없어 `codes_in_use()` 에 안 잡힌다), 마이그레이션이
         `set_content_code(로그인, LOGIN)` 을 그대로 밀어붙이면 두 컨텐츠가
         같은 코드를 갖게 되고, 독립된 `tc_seq` 카운터가 같은 `TC_LOGIN_NNN`
         을 내놓아 `testcases.id` 가 기본키인 `INSERT OR REPLACE` 가 한쪽을
         지운다. 이 메서드를 유일한 쓰기 경로로 만들면 호출자가 누구든
         (CLI든 마이그레이션이든) 이 검사를 피해갈 수 없다.
+
+        **이미 확정된 코드를 다른 값으로 바꾸는 것도 거절한다.** `cmd_slot_init`
+        은 같은 규칙을 CLI 층에서만 봤는데, 이 메서드를 직접 부르는 호출자
+        (마이그레이션 포함)는 그 CLI 검사를 거치지 않는다 — 바꾸면 이미 발급된
+        `TC_<코드>_<번호>` 가 가리키던 컨텐츠가 바뀌어 인용된 ID 가 죽는다.
+        코드가 아직 없는 컨텐츠(빈 문자열)에 처음 코드를 다는 것과, 이미 있는
+        코드를 **같은 값으로** 다시 다는 것(마이그레이션 재실행, 멱등성)은
+        막지 않는다 — 둘 다 기존 발급 ID 와 어긋나지 않는다.
         """
         self._validate_code(code)
         if self.get_content(name) is None:
             raise KeyError(f"컨텐츠 '{name}'가 없습니다. 먼저 slot init을 실행하세요.")
+        current = self.content_code(name)
+        if current and current != code:
+            raise ValueError(
+                f"'{name}'의 코드는 이미 '{current}'로 확정되어 있어 '{code}'로 "
+                f"바꿀 수 없습니다 — 이미 발급된 TC ID(TC_{current}_NNN)가 그 "
+                f"코드를 가리킵니다. 새 컨텐츠로 분리하거나, 기존 ID 를 그대로 "
+                f"쓰려면 코드를 '{current}'로 유지하세요."
+            )
         self._ensure_code_available(code, name)
         db = self._db()
         db.execute("UPDATE contents SET code = ? WHERE name = ?", (code, name))
@@ -241,9 +257,13 @@ class KnowledgeStore:
         코드 없는 컨텐츠도 만들 수 있어야 한다 (거절은 `_next_tc_id` 쪽 몫이다).
 
         새 컨텐츠에 `code` 를 함께 주면 **행을 넣기 전에** 형식·중복을 검사한다.
-        먼저 넣고 `set_content_code` 로 검사하면, 검사가 실패해도 그 실패가
+        기존 컨텐츠에 코드를 새로 다는 경우도 마찬가지로 **`UPDATE` 전에**
+        검사를 끝낸다. 먼저 쓰고 나중에 검사하면, 검사가 실패해도 그 실패가
         `KnowledgeStore.close()` 의 무조건 커밋(예외와 무관하게 항상 커밋한다)을
-        타고 그대로 확정돼 — 실패한 명령인데 코드 없는 유령 컨텐츠가 남는다.
+        타고 그대로 확정된다 — 실패한 명령(rc!=0)인데 새 컨텐츠는 코드 없는
+        유령으로, 기존 컨텐츠는 `types` 만 조용히 바뀐 채로 남는다(실측: 다른
+        컨텐츠가 이미 쓰는 코드로 기존 컨텐츠에 `slot init --code` 를 다시
+        부르면, 명령은 rc=1 로 실패해도 `types` 확장은 커밋돼 있었다).
         """
         db = self._db()
         existing = self.get_content(name)
@@ -260,12 +280,19 @@ class KnowledgeStore:
                  datetime.now(timezone.utc).isoformat()),
             )
         else:
+            # 코드를 새로 달 것인지부터 정하고, 그럴 것이면 검사까지 아래
+            # `UPDATE`(types) 보다 먼저 끝낸다 — 이미 코드가 있으면(재실행)
+            # 손대지 않으므로 검사 자체가 필요 없다.
+            will_set_code = bool(code) and not self.content_code(name)
+            if will_set_code:
+                self._validate_code(code)
+                self._ensure_code_available(code, name)
             db.execute(
                 "UPDATE contents SET types = ? WHERE name = ?",
                 (json.dumps(merged, ensure_ascii=False), name),
             )
-            if code and not self.content_code(name):
-                self.set_content_code(name, code)
+            if will_set_code:
+                db.execute("UPDATE contents SET code = ? WHERE name = ?", (code, name))
 
         have = {r["key"] for r in db.execute(
             "SELECT key FROM slots WHERE content = ?", (name,)
@@ -562,7 +589,13 @@ class KnowledgeStore:
                 if not tc.id:
                     tc.id = inherited.get((tc.category_minor, tc.category_sub), "")
                 self._insert_testcase(content, family, tc, slot_keys)
-        except Exception:
+        except BaseException:
+            # `except Exception` 은 `KeyboardInterrupt`/`SystemExit` 을 놓친다 —
+            # 삽입 루프 한가운데서 Ctrl-C 가 들어오면 그 둘은 `BaseException` 만
+            # 상속하므로 이 롤백을 타지 않고 그대로 빠져나가, 이미 실행된
+            # DELETE 가 `KnowledgeStore.close()` 의 무조건 커밋을 타고 확정된다
+            # (계열이 통째로 비워진 채로 남는다). 어떤 방식의 중단이든 롤백해야
+            # 원자성이 실제로 지켜진다.
             db.rollback()
             raise
         db.commit()

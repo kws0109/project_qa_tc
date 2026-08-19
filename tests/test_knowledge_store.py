@@ -237,6 +237,29 @@ def test_a_second_init_without_a_code_keeps_the_existing_one(tmp_path):
         assert st.content_code("로그인") == "LOGIN"
 
 
+def test_init_content_on_existing_content_leaves_types_untouched_when_the_code_is_taken(tmp_path):
+    """기존 컨텐츠에 다른 컨텐츠가 이미 쓰는 코드를 주면, 실패한 명령이
+    `types` 확장까지 되돌려야 한다 (부분 커밋 회귀).
+
+    `init_content` 는 기존 컨텐츠 분기에서 `types` UPDATE 를 먼저 실행하고
+    코드 중복 검사(`set_content_code`)를 나중에 했다. `KnowledgeStore.close()`
+    는 예외와 무관하게 항상 커밋하므로, 코드 검사가 실패해 `init_content` 가
+    예외를 던져도 그 앞의 `types` UPDATE 는 이미 실행돼 있어 그대로 커밋된다
+    — 실패한 명령(rc!=0)인데 `types` 만 조용히 바뀐 채로 남는다.
+    """
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("로그인보상", game="g", types=[], code="LOGIN")   # LOGIN 선점
+        st.init_content("로그인", game="g", types=["가챠"])               # 코드 없음
+        before = sorted(st.get_content("로그인").types)
+
+        with pytest.raises(ValueError):
+            st.init_content("로그인", game="g", types=["편성"], code="LOGIN")
+
+        after = sorted(st.get_content("로그인").types)
+        assert after == before, "실패한 명령인데 types 가 바뀌었습니다 (부분 커밋)"
+        assert st.content_code("로그인") == ""
+
+
 def test_testcase_ids_follow_the_code_and_increase(tmp_path, make_tc):
     with KnowledgeStore(tmp_path / "g.db") as st:
         st.init_content("로그인", game="g", types=[], code="LOGIN")
@@ -350,6 +373,30 @@ def test_replace_generated_refuses_a_batch_with_duplicate_minor_sub_pairs(tmp_pa
         assert [t.category_sub for t in st.testcases("파티편성")] == ["중복 케이스"]
 
 
+def test_replace_generated_accepts_same_sub_under_different_minor_in_one_batch(tmp_path, make_tc):
+    """거절 기준은 (중분류, 소분류) **조합**이지 소분류 하나만이 아니다.
+
+    소분류만 보는 (더 좁은) 키로 몰래 좁혀도 위 거절 테스트는 여전히 초록이다
+    — 그 테스트는 중분류까지 같은 경우만 배치하기 때문이다. 이 테스트는
+    반대쪽 경계를 고정한다: 소분류가 같아도 중분류가 다르면 서로 다른 TC 이므로
+    거절되지 않고 **둘 다 저장돼야** 한다.
+    """
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("파티편성", game="g", types=[], code="PARTY")
+        a = make_tc(category_sub="입력 오류")
+        a.category_minor = "로그인"
+        b = make_tc(category_sub="입력 오류")
+        b.category_minor = "회원가입"
+
+        added, kept, deleted = st.replace_generated(
+            "파티편성", "정상 경로", [a, b], ["core_action"]
+        )
+        assert added == 2
+
+        pairs = {(t.category_minor, t.category_sub) for t in st.testcases("파티편성")}
+        assert pairs == {("로그인", "입력 오류"), ("회원가입", "입력 오류")}
+
+
 def test_an_old_database_without_the_code_column_still_opens(tmp_path):
     """첫 실사용으로 만들어진 DB 에는 `contents.code` 가 없다."""
     import sqlite3
@@ -404,6 +451,57 @@ def test_set_content_code_refuses_an_unknown_content(tmp_path):
     with KnowledgeStore(tmp_path / "g.db") as st:
         with pytest.raises(KeyError):
             st.set_content_code("없는컨텐츠", "LOGIN")
+
+
+def test_set_content_code_refuses_changing_an_already_established_code(tmp_path):
+    """이미 확정된 코드를 다른 값으로 바꾸는 것은 `set_content_code` 를 직접
+    부르는 호출자도 거절당해야 한다.
+
+    `cmd_slot_init` 은 같은 규칙을 CLI 층에서만 봤다(`test_cli_slot.py` 의
+    `test_changing_the_code_of_an_existing_content_is_refused`) — 그런데
+    `apply_reclassification` 같은 직접 호출자는 그 CLI 검사를 아예 거치지
+    않는다. 여기서 막지 않으면 이미 발급된 `TC_<코드>_<번호>` 가 가리키던
+    컨텐츠가 조용히 바뀐다.
+    """
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("로그인", game="g", types=[], code="LOGIN")
+
+        with pytest.raises(ValueError) as e:
+            st.set_content_code("로그인", "SIGNIN")
+        msg = str(e.value)
+        assert "로그인" in msg and "LOGIN" in msg and "SIGNIN" in msg
+        assert st.content_code("로그인") == "LOGIN"   # 거절됐으니 그대로여야 한다
+
+
+def test_set_content_code_allows_setting_an_empty_code_even_with_old_shaped_testcases(tmp_path, make_tc):
+    """코드가 비어 있는 컨텐츠에 처음 코드를 다는 것은, 코드 없이 발급된 옛
+    `tc_<hex>` 모양의 TC 가 이미 있어도 막지 않는다.
+
+    이것이 바로 승인된 로그인 재분류 마이그레이션이 밟는 경로다 — `로그인`
+    은 코드 없이(빈 문자열) 옛 TC 23건을 갖고 있다가 `LOGIN` 을 처음 받는다.
+    새 guard(이미 확정된 코드를 못 바꾸게 막는 규칙)가 "코드 없음"까지
+    "확정된 코드" 로 잘못 취급하면 이 마이그레이션 자체가 막힌다.
+    """
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("로그인", game="g", types=[])
+        assert st.content_code("로그인") == ""
+        st.add_testcase("로그인", "경계값", make_tc(id="tc_old_shape"), [])
+
+        st.set_content_code("로그인", "LOGIN")   # 거절되면 안 된다
+
+        assert st.content_code("로그인") == "LOGIN"
+        assert "tc_old_shape" in {t.id for t in st.testcases("로그인")}
+
+
+def test_set_content_code_allows_reapplying_the_same_code(tmp_path):
+    """같은 코드를 다시 다는 것(멱등 재실행)은 "코드가 바뀐다" 가 아니다 —
+    마이그레이션이 끊긴 뒤 다시 돌 때 이 경로를 밟는다."""
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("로그인", game="g", types=[], code="LOGIN")
+
+        st.set_content_code("로그인", "LOGIN")   # 거절되면 안 된다
+
+        assert st.content_code("로그인") == "LOGIN"
 
 
 def test_codes_in_use_reports_all_owners_when_a_code_is_already_duplicated(tmp_path):
