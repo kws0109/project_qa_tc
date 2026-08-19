@@ -516,6 +516,40 @@ def test_export_writes_the_xlsx_and_leaves_every_db_untouched(app, tmp_path, mon
     )
 
 
+def test_export_marks_withdrawn_evidence_keyed_on_family_not_category_minor(
+        app, tmp_path, monkeypatch):
+    """`/api/export` 의 근거 철회 판정은 family 를 봐야 한다.
+
+    `category_minor` 와 `family` 를 **일부러 다르게** 준다 — 재분류 이후
+    `category_minor` 는 화면 이름(예: '파티 편성 화면')을, `family` 는 계열
+    이름(예: '정상 경로')을 담아 둘이 절대 같지 않다. `server.py` 의 철회
+    집합이 `category_minor` 로 퇴행하면 이 계열은 (문자열이 전혀 다르므로)
+    영원히 일치하지 않아 `근거 상태` 가 항상 '유효' 로만 나온다 — 이 테스트가
+    그 회귀를 반드시 잡는다.
+    """
+    import qatc.app.server as server_mod
+    from qatc.models import Priority, TCKind, TCOrigin, TestCase
+
+    db = tmp_path / "k" / "starrail.db"
+    with KnowledgeStore(db) as st:
+        tc = TestCase(id="", category_minor="파티 편성 화면", category_sub="정상 동작",
+                      family="정상 경로", steps=["1"], expected=["e"],
+                      priority=Priority.HIGH, kind=TCKind.HAPPY_PATH,
+                      origin=TCOrigin.INTERVIEW)
+        st.add_testcase("파티편성", "정상 경로", tc, ["core_action"])
+        st.set_slot("파티편성", "core_action", SlotStatus.NA)   # 근거 철회
+
+    monkeypatch.setattr(server_mod.os, "startfile", lambda p: None, raising=False)
+
+    r = app.test_client().post("/api/export", json={"game": "starrail", "content": "파티편성"})
+    assert r.status_code == 200
+
+    from openpyxl import load_workbook
+    ws = load_workbook(r.get_json()["path"])["테스트케이스"]
+    header = [c.value for c in ws[1]]
+    assert ws[2][header.index("근거 상태")].value == "근거 철회됨"
+
+
 # --- /api/chat 검증 (최종 리뷰 확정 결함 4) ---------------------------------
 
 
@@ -1154,14 +1188,30 @@ def test_the_stylesheet_draws_the_capture_button(app):
 
 
 def test_the_tree_labels_testcases_by_sub_not_by_title(app):
-    """화면이 소분류로 라벨링해야 새 계층이 사용자에게 보인다."""
+    """화면이 소분류로 라벨링해야 새 계층이 사용자에게 보인다.
+
+    `renderTcRow` 본문에는 `tc.sub` 가 **두 번** 나온다 — 보이는 라벨
+    (`text:`) 과 툴팁(`title:`). `"tc.sub" in body` 처럼 아무 자리에서나
+    찾으면, 보이는 라벨을 `tc.title` 로 되돌리고 툴팁만 `tc.sub` 로 남겨도
+    통과한다(실측: `text: tc.sub` 를 `text: tc.title` 로 되돌려도 이
+    검사만으로는 안 잡힌다 — 같은 줄의 `title: tc.sub` 가 문자열을 계속
+    공급하기 때문이다). `text:` 자리를 짚어야 실제로 화면에 그려지는 값을
+    본다.
+    """
     import re
 
     js = re.sub("//[^" + chr(10) + "]*", "",
                 app.test_client().get("/static/app.js").get_data(as_text=True))
     m = re.search(r"function renderTcRow\([^)]*\)\s*\{([\s\S]*?)" + chr(10) + r"\}", js)
     assert m, "renderTcRow 를 찾을 수 없습니다"
-    assert "tc.sub" in m.group(1), "TC 라벨이 소분류를 쓰지 않습니다"
+    body = m.group(1)
+    assert re.search(r"text:\s*tc\.sub\b", body), (
+        "TC 라벨(text:, 실제로 보이는 값)이 소분류를 쓰지 않습니다"
+    )
+    assert "tc.title" not in body, (
+        "TC 라벨이 title 을 씁니다 — 이 브랜치가 만든 TC 는 title 이 없어 "
+        "화면이 전부 빈칸으로 나옵니다"
+    )
 
 
 def test_the_review_panel_shows_the_hierarchy_instead_of_a_title(app):

@@ -977,3 +977,36 @@ def test_skill_knows_the_content_code():
     text = SKILL.read_text(encoding="utf-8")
     assert "--code" in text
     assert "LOGIN" in text
+
+
+# --- 명세 §7 이 SKILL.md 3단계에 요구하는 규칙 8개가 전부 있는가 (M14 · M33) --
+
+
+def _step3(text: str) -> str:
+    return text.split("## 3단계", 1)[1].split("## 4단계", 1)[0]
+
+
+def test_skill_documents_regression_resilience():
+    """명세 §7 의 마지막 규칙(기획 변경 내성)이 3단계에 있어야 한다.
+
+    §7 은 3단계에 넣을 규칙을 8개 나열하는데, 이 규칙 하나만 조용히 빠져
+    있었다 — 나머지 일곱은 이미 들어가 있어서 "규칙이 하나도 없다" 로는 이
+    누락을 못 잡는다. 문서 전체에서 정확히 한 번만 나와야 하고(다른 절에
+    끼워 넣어도 이 검사를 속일 수 없도록), 그 자리가 3단계 안이어야 한다.
+    """
+    text = SKILL.read_text(encoding="utf-8")
+    assert text.count("기획 변경") == 1, "기획 변경 내성 규칙이 없거나 중복됩니다"
+    assert "기획 변경" in _step3(text), "기획 변경 내성 규칙이 3단계 밖에 있습니다"
+
+
+def test_skill_documents_the_duplicate_minor_sub_pair_refusal():
+    """한 배치 안에서 (중분류, 소분류) 가 겹치면 `tc add` 가 거절한다는 것을
+    3단계가 미리 말해야 한다 (M33).
+
+    거부 메시지 자체는 자족적이라 모델이 회복은 하지만, 몰랐다가 거절당하면
+    승인 창에 답할 주체가 없는 실행에서 왕복 한 턴을 헛되이 쓴다.
+    """
+    text = SKILL.read_text(encoding="utf-8")
+    key = "같은 (중분류, 소분류) 조합을 두 번 쓰면"
+    assert text.count(key) == 1, "중복 (중분류, 소분류) 거절 안내가 없거나 중복됩니다"
+    assert key in _step3(text), "중복 (중분류, 소분류) 거절 안내가 3단계 밖에 있습니다"

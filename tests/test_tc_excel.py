@@ -170,9 +170,19 @@ def test_skipped_sheet_still_says_no_tc_when_there_really_is_none(tmp_path):
 
 
 def test_summary_counts_withdrawn_testcases(make_tc, tmp_path):
+    """요약 시트의 철회 집계는 family 로 세야 한다.
+
+    `category_minor` 는 **일부러 그대로 둔다**(둘 다 기본값 '정상 경로') —
+    `family` 만 바꾼다. 예전처럼 둘 다 '경계값'으로 함께 바꾸면 집계 코드가
+    `category_minor` 로 퇴행해도 답이 똑같이 1이 되어 이 테스트가 그 회귀를
+    못 잡는다(실측: `tc_excel.py` 의 `tc.family in withdrawn` 을
+    `tc.category_minor in withdrawn` 로 바꿔도 이전 버전은 그대로 초록이었다).
+    `category_minor` 를 건드리지 않으면, 회귀가 나는 순간 두 번째 케이스의
+    `category_minor`('정상 경로')가 `withdrawn`('정상 경로')과 계속 일치해
+    철회 집계가 2로 틀어져 이 테스트가 실패한다.
+    """
     cases = [make_tc(title="철회된 것"), make_tc(title="살아 있는 것")]
-    cases[1].category_minor = "경계값"
-    cases[1].family = "경계값"          # 철회 판정은 family 를 보므로 함께 바꾼다
+    cases[1].family = "경계값"          # 철회 판정은 family 를 보므로 이것만 바꾼다
     p = export_tc_excel("파티편성", cases, [], tmp_path / "out.xlsx",
                         withdrawn={"정상 경로"})
     ws = load_workbook(p)["요약"]

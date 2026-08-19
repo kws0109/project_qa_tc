@@ -532,6 +532,7 @@ def test_add_without_a_code_refuses_before_deleting_existing_rows(cfg_env, stdin
     out = capsys.readouterr().out
     assert "--code" in out
     assert "KeyError" not in out           # 날 예외가 아니라 우리 메시지여야 한다
+    assert "지우지 않았습니다" in out       # 기존 TC 가 안전하다는 것을 말해야 한다
     assert sorted(t.id for t in _stored(cfg_env)) == ["tc_old0", "tc_old1"]
 
 
@@ -558,6 +559,48 @@ def test_add_refuses_a_batch_with_duplicate_middle_sub_pairs(stdin_text, ready, 
     assert "이 배치에 두 번 있습니다" in out   # 가드의 실제 메시지 — 소분류 값과 무관한 고정 문구
     assert "ValueError" not in out         # 날 예외가 아니라 우리 메시지여야 한다
     assert _stored(ready) == []            # 아무것도 저장되지 않았다
+
+
+def test_add_refuses_duplicates_that_differ_only_by_trailing_whitespace(stdin_text, ready, capsys):
+    """소분류가 뒤 공백 하나만 다르면 육안으로는 완전히 같은 케이스다.
+
+    원문 그대로 비교하면(`"정상 로그인"` != `"정상 로그인 "`) Bug B 가드를
+    빠져나가 rc=0 · "2건 저장" 으로 둘 다 저장된다 — 엑셀에는 대·중·소가
+    똑같아 보이는 두 행이 남는다. `tc add` 가 저장 전에 strip 하면 같은
+    키가 되어 가드가 잡는다.
+    """
+    dup = json.dumps({"testcases": [
+        {"middle": "파티 편성", "sub": "정상 로그인", "steps": ["s1"], "expected": ["e1"]},
+        {"middle": "파티 편성", "sub": "정상 로그인 ", "steps": ["s2"], "expected": ["e2"]},
+    ]}, ensure_ascii=False)
+    stdin_text(dup)
+    rc = main(["tc", "add", "파티편성", "--family", "정상 경로",
+               "--origin", "interview", "--json", "-"])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "이 배치에 두 번 있습니다" in out
+    assert _stored(ready) == []
+
+
+def test_list_bracket_shows_the_family_not_the_category_minor(stdin_text, ready, capsys):
+    """`tc list` 의 대괄호 라벨은 family 를 보여줘야 한다.
+
+    `_payload()` 의 `middle`(중분류) 기본값은 '파티 편성'이고 `--family` 로
+    준 값은 '정상 경로' — 재분류 이후의 실제 DB 처럼 **일부러 다르다.**
+    `cmd_tc_list` 가 `[{tc.family}]` 대신 `[{tc.category_minor}]` 로
+    퇴행하면 대괄호 안이 '파티 편성'으로 바뀌는데, 부분 문자열만 보는
+    검사로는 두 라벨이 같은 줄에 함께 나타나 회귀를 놓친다 — 그래서 있어야
+    할 라벨과 없어야 할 라벨을 양쪽 다 확인한다.
+    """
+    stdin_text(_payload())
+    main(["tc", "add", "파티편성", "--family", "정상 경로",
+          "--origin", "interview", "--json", "-"])
+    capsys.readouterr()
+
+    assert main(["tc", "list", "파티편성"]) == 0
+    out = capsys.readouterr().out
+    assert "[정상 경로]" in out, "대괄호가 family 를 보여주지 않습니다"
+    assert "[파티 편성]" not in out, "대괄호가 category_minor(중분류) 를 보여줍니다"
 
 
 def test_add_stores_inferred_origin(stdin_text, ready, monkeypatch):

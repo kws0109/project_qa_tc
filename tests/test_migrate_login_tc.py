@@ -127,8 +127,29 @@ def test_applying_twice_does_not_double(db):
 
 
 def test_a_backup_is_written_before_touching_the_db(db):
-    """되돌릴 수 없는 편집 전에 원본을 남긴다."""
+    """되돌릴 수 없는 편집 전에 원본을 남긴다.
+
+    존재·크기만으로는 부족하다 — `shutil.copy2` 를 삭제·삽입 **뒤**로 옮겨도
+    백업 파일은 여전히 생기고 크기도 0보다 크므로 그 어서션들은 그대로
+    통과한다(실측: `apply_reclassification` 의 백업 줄을 `with
+    KnowledgeStore(...)` 블록 다음으로 옮기면 스위트가 그대로 초록이었다).
+    이 테스트가 지키려는 성질은 **순서**이므로, 백업 파일 자체를 열어
+    마이그레이션 **전** 상태(옛 3건의 id, 새 `TC_LOGIN_NNN` 은 아직 없음)를
+    담고 있는지 확인한다 — 이미 옮겨 써진 백업이라면 옛 id 가 없고 새 id 만
+    있을 것이다.
+    """
     apply_reclassification(db, PLAN)
     backups = list(db.parent.glob("starrail.db.bak*"))
     assert backups, "백업 파일이 없습니다"
     assert backups[0].stat().st_size > 0
+
+    with KnowledgeStore(backups[0]) as st:
+        backed_up_ids = {t.id for t in st.testcases("로그인")}
+    old_ids = {row[0] for row in _OLD_SHAPED_ROWS}
+    assert backed_up_ids == old_ids, (
+        "백업이 마이그레이션 전 원본을 담고 있지 않습니다 — "
+        f"기대: {sorted(old_ids)}, 실제: {sorted(backed_up_ids)}"
+    )
+    assert not any(i.startswith("TC_LOGIN_") for i in backed_up_ids), (
+        "백업에 이미 새 ID 가 있습니다 — 편집 뒤에 복사됐다는 뜻입니다"
+    )

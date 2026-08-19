@@ -549,6 +549,27 @@ def test_a_lowercase_or_symbolic_code_is_refused(cfg_env, capsys):
     assert "영문 대문자" in capsys.readouterr().out
 
 
+def test_an_invalid_code_for_a_brand_new_game_is_refused_before_any_db_is_created(
+        cfg_env, capsys):
+    """새 게임의 첫 `slot init` 이 코드 형식으로 실패하면, DB 파일 자체가
+    생기면 안 된다 (M9).
+
+    `KnowledgeStore.open()` 은 연결하는 순간 sqlite 파일을 만든다 — CLI 의
+    사전 형식 검사(`cmd_slot_init` 이 DB 를 열기 전에 보는 `is_valid_code_format`)
+    가 없으면, 형식이 틀린 코드로도 일단 DB 를 열고 그 안에서야 실패해 빈
+    DB 파일이 유령으로 남는다. 여기서는 이 게임(genshin)의 DB 가 이 테스트
+    안에서 한 번도 열린 적 없어야 그 유령이 실제로 생겼는지 알 수 있다.
+    """
+    assert not (cfg_env / "genshin.db").exists()
+
+    rc = main(["slot", "init", "로그인", "--game", "genshin", "--code", "log-in"])
+    assert rc == 1
+    assert "영문 대문자" in capsys.readouterr().out
+    assert not (cfg_env / "genshin.db").exists(), (
+        "형식이 틀린 코드인데 DB 파일이 생겼습니다"
+    )
+
+
 def test_a_duplicate_code_in_the_same_game_is_refused(cfg_env, capsys):
     main(["slot", "init", "로그인", "--game", "starrail", "--code", "LOGIN"])
     rc = main(["slot", "init", "로그인보상", "--game", "starrail", "--code", "LOGIN"])

@@ -3,7 +3,7 @@ import pytest
 from conftest import INVISIBLE_IDS, INVISIBLE_VALUES
 from qatc.knowledge.models import SlotStatus
 from qatc.knowledge.slots import BASE_SLOTS
-from qatc.knowledge.store import KnowledgeStore
+from qatc.knowledge.store import KnowledgeStore, is_valid_code_format
 
 
 @pytest.fixture()
@@ -322,12 +322,17 @@ def test_replace_generated_without_a_code_refuses_before_deleting_existing_rows(
 
     위 테스트(`test_adding_a_testcase_without_a_code_is_refused`)는 **빈**
     컨텐츠로 `add_testcase` 를 직접 불러 이 순서를 검증하지 못한다 —
-    `replace_generated` 의 삭제 루프를 아예 지나가지 않기 때문이다. 실측
-    재현: 마스터 시절 DB는 `_ensure_code_column` 이 `code=''` 로 백필하고,
-    거기서 `tc add` 를 다시 부르면 이 브랜치의 `_next_tc_id` 가 삽입 루프
-    한가운데서 `KeyError` 를 던졌다 — 그런데 그 시점엔 이미 기존 2건이
-    DELETE + COMMIT 으로 지워진 뒤였다(재현: `['tc_old0','tc_old1']` →
-    `[]`, 삽입 0건, rc=1). 여기서는 기존 행이 그대로 남아 있어야 한다.
+    `replace_generated` 의 삭제 루프를 아예 지나가지 않기 때문이다.
+
+    **"마스터 시절 DB" 라고 부르지 않는다 — 정확하지 않아서다.** 진짜
+    마스터 시절 행의 `generated_hash` 는 `category_sub` 가 해시 payload에
+    들어가기 전(d8546ef 이전) 공식으로 저장돼 있어, 지금 `testcase_hash` 로
+    다시 계산하면 사실상 항상 달라진다 — `edited=True` 로 판정돼 삭제
+    루프가 건드리지 않고 살아남는다. 즉 이 순서 버그가 실제로 데이터를
+    지우려면 **이미 이 브랜치의 해시로 저장된**(따라서 `edited=False` 인)
+    행이 있어야 한다 — 여기서는 그런 상태를 `make_tc` + `add_testcase` 로
+    직접 만든다. 재현: `['tc_old0','tc_old1']` → `[]`, 삽입 0건, rc=1.
+    여기서는 기존 행이 그대로 남아 있어야 한다.
     """
     with KnowledgeStore(tmp_path / "g.db") as st:
         st.init_content("파티편성", game="g", types=[])  # --code 없음
@@ -358,8 +363,11 @@ def test_replace_generated_refuses_a_batch_with_duplicate_minor_sub_pairs(tmp_pa
         st.init_content("파티편성", game="g", types=[], code="PARTY")
         # 이미 있는 행 하나 — 물려줄 id 가 있어야 실제 충돌(덮어쓰기)까지
         # 재현된다. 없어도 거절은 마찬가지로 일어나야 하므로(표에서 구별이
-        # 안 되는 문제 자체는 기존 행 유무와 무관), 이 조건 없이도 아래
-        # 어서션은 성립한다.
+        # 안 되는 문제 자체는 기존 행 유무와 무관) — 그 주장은 아래
+        # `test_replace_generated_refuses_duplicate_pairs_even_with_no_existing_rows`
+        # 가 빈 DB 로 따로 확인한다. 이 테스트 자신은 기존 행이 있는 채로만
+        # 돌기 때문에, 가드가 "물려줄 id 가 있을 때만" 으로 좁혀져도 이
+        # 테스트만으로는 못 잡는다.
         st.add_testcase("파티편성", "정상 경로",
                          make_tc(category_sub="중복 케이스"), ["core_action"])
 
@@ -371,6 +379,28 @@ def test_replace_generated_refuses_a_batch_with_duplicate_minor_sub_pairs(tmp_pa
 
         # 거절됐으니 원래 있던 한 건이 그대로 남아 있어야 한다.
         assert [t.category_sub for t in st.testcases("파티편성")] == ["중복 케이스"]
+
+
+def test_replace_generated_refuses_duplicate_pairs_even_with_no_existing_rows(tmp_path, make_tc):
+    """기존 행이 하나도 없어도 배치 안 중복은 거절된다 — 배치 내부 검사만으로
+    성립해야 하는 성질을 이 테스트 하나가 단독으로 고정한다.
+
+    위 테스트(`test_replace_generated_refuses_a_batch_with_duplicate_minor_sub_pairs`)는
+    기존 행을 하나 심어 두므로, 가드가 "물려줄 id 가 있는 (중분류, 소분류) 만
+    거절한다" (`key in inherited`) 로 좁혀져도 그 테스트는 여전히 통과한다 —
+    이 테스트는 `inherited` 가 비어 있는 상태에서 돌려 그 좁혀진 버전을
+    구별해 낸다.
+    """
+    with KnowledgeStore(tmp_path / "g.db") as st:
+        st.init_content("파티편성", game="g", types=[], code="PARTY")
+
+        dup_a = make_tc(category_sub="중복 케이스", title="본문A")
+        dup_b = make_tc(category_sub="중복 케이스", title="본문B")
+        with pytest.raises(ValueError) as e:
+            st.replace_generated("파티편성", "정상 경로", [dup_a, dup_b], ["core_action"])
+        assert "중복 케이스" in str(e.value)
+
+        assert st.testcases("파티편성") == []
 
 
 def test_replace_generated_accepts_same_sub_under_different_minor_in_one_batch(tmp_path, make_tc):
@@ -447,10 +477,19 @@ def test_set_content_code_refuses_a_malformed_code(tmp_path):
 
 
 def test_set_content_code_refuses_an_unknown_content(tmp_path):
-    """존재하지 않는 컨텐츠에는 코드를 달 수 없다 (Bug C)."""
+    """존재하지 않는 컨텐츠에는 코드를 달 수 없다 (Bug C).
+
+    예외 클래스만으로는 부족하다 — `set_content_code` 를 직접 부르는
+    호출자(마이그레이션 포함) 중 이 예외가 유일하게 `cmd_slot_init` 의
+    `except ValueError` 를 거치지 않는다. `args[0]` 자체가 사람이 읽는
+    한국어 문장이어야, 그 자리에서 새어나가도 다음 조치가 남는다.
+    """
     with KnowledgeStore(tmp_path / "g.db") as st:
-        with pytest.raises(KeyError):
+        with pytest.raises(KeyError) as e:
             st.set_content_code("없는컨텐츠", "LOGIN")
+        msg = str(e.value.args[0])
+        assert "없는컨텐츠" in msg
+        assert "slot init" in msg
 
 
 def test_set_content_code_refuses_changing_an_already_established_code(tmp_path):
@@ -530,3 +569,29 @@ def test_codes_in_use_reports_all_owners_when_a_code_is_already_duplicated(tmp_p
     # 바꾸면 옛 구현으로 되돌려도 이 테스트가 초록이다). 콤마로 나눠 집합으로
     # 비교해야 "두 소유자 모두 보인다" 를 정확히 고정한다.
     assert set(owners["LOGIN"].split(", ")) == {"로그인", "로그인보상"}
+
+
+# --- is_valid_code_format 의 경계 (M25) --------------------------------
+
+#: (코드, 유효한가) — 이 저장소의 모든 코드 검증(CLI 사전 검사·`_validate_code`)이
+#: 결국 여기로 모이는데, 정작 이 함수 자체를 직접 겨눈 테스트가 없었다.
+#: `_CODE_PATTERN` 을 `[A-Z0-9]{2,12}` 에서 `[A-Z0-9]+` 로 느슨하게 고쳐도
+#: 'log-in' 하나로 통일된 기존 스위트는 문자 집합만 걸려 전부 그대로
+#: 통과한다 — 길이 하한(2자)·상한(12자)이 실질적으로 무방비였다.
+_CODE_FORMAT_CASES = [
+    ("LOGIN", True),
+    ("A1", True),                 # 하한 — 2자
+    ("A" * 12, True),             # 상한 — 12자
+    ("", False),                  # 빈 문자열
+    ("login", False),             # 소문자
+    ("로그인", False),             # 비 라틴 문자
+    ("LO GIN", False),            # 공백 포함
+    ("A", False),                 # 1자 — 하한 미달
+    ("A" * 13, False),            # 13자 — 상한 초과
+]
+
+
+@pytest.mark.parametrize("code,expected", _CODE_FORMAT_CASES,
+                         ids=[f"{c!r}->{e}" for c, e in _CODE_FORMAT_CASES])
+def test_is_valid_code_format_bounds(code, expected):
+    assert is_valid_code_format(code) is expected
