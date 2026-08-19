@@ -516,6 +516,45 @@ def test_export_writes_the_xlsx_and_leaves_every_db_untouched(app, tmp_path, mon
     )
 
 
+def test_a_cross_origin_export_is_refused(app, monkeypatch):
+    """이 라우트는 디스크에 파일을 만들고 `os.startfile` 로 열기까지 한다.
+
+    `/api/chat`·`/api/capture` 와 같은 이유로 서버가 실행 전에 막아야
+    한다 — 단순 요청은 preflight 없이 이미 실행되기 때문이다. 세 라우트
+    중 이 라우트만 봉쇄가 빠져 있었다.
+    """
+    called = []
+    import qatc.app.server as server_mod
+    monkeypatch.setattr(server_mod, "export_tc_excel",
+                        lambda *a, **k: called.append(1))
+
+    r = app.test_client().post("/api/export",
+                               json={"game": "starrail", "content": "파티편성"},
+                               headers={"Origin": "https://evil.example"})
+    assert r.status_code == 403
+    assert called == [], "교차 출처 요청이 xlsx 를 만들었습니다"
+
+
+def test_a_same_origin_export_still_works(app, tmp_path, monkeypatch):
+    """봉쇄가 정상 내보내기를 막으면 안 된다."""
+    import qatc.app.server as server_mod
+    from qatc.models import Priority, TCKind, TCOrigin, TestCase
+
+    db = tmp_path / "k" / "starrail.db"
+    with KnowledgeStore(db) as st:
+        tc = TestCase(id="", category_minor="정상 경로", title="TC",
+                      steps=["1"], expected=["e"], priority=Priority.HIGH,
+                      kind=TCKind.HAPPY_PATH, origin=TCOrigin.INTERVIEW)
+        st.add_testcase("파티편성", "정상 경로", tc, ["core_action"])
+
+    monkeypatch.setattr(server_mod.os, "startfile", lambda p: None, raising=False)
+
+    r = app.test_client().post("/api/export",
+                               json={"game": "starrail", "content": "파티편성"},
+                               headers={"Origin": "http://localhost"})
+    assert r.status_code == 200
+
+
 def test_export_marks_withdrawn_evidence_keyed_on_family_not_category_minor(
         app, tmp_path, monkeypatch):
     """`/api/export` 의 근거 철회 판정은 family 를 봐야 한다.

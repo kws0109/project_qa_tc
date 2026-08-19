@@ -32,14 +32,15 @@ from .views import ContentNotFound, content_detail, resolve_db_path, tree
 def _reject_bad_local_request(req):
     """로컬 전용 POST 라우트가 공통으로 보는 것. 괜찮으면 `None`.
 
-    `/api/chat` 과 `/api/capture` 둘 다 필요로 하는 앞 두 검사다 — 복사하지
-    않고 나눠 쓴다. 갈라지면 한쪽만 뚫린다.
+    `/api/chat`·`/api/capture`·`/api/export` 셋 다 필요로 하는 앞 두
+    검사다 — 복사하지 않고 나눠 쓴다. 갈라지면 한쪽만 뚫린다.
 
     1. **출처.** 로컬 전용 앱이므로 교차 출처 요청은 그냥 거절한다. CORS
        응답 헤더로 막는 것으로는 부족하다 — `text/plain` 같은 단순 요청은
        preflight 가 없어서, 브라우저가 응답을 **읽지 못할 뿐 요청은 이미
        실행된다.** `/api/chat` 은 그때 이미 돈이 쓰였고, `/api/capture` 는
-       그때 이미 화면을 읽었다. 브라우저를 믿지 말고 서버가 실행 전에
+       그때 이미 화면을 읽었고, `/api/export` 는 그때 이미 파일을 만들어
+       `os.startfile` 로 열었다. 브라우저를 믿지 말고 서버가 실행 전에
        막아야 한다. `Origin` 이 아예 없는 호출(로컬 스크립트·테스트
        클라이언트)은 브라우저가 만든 것이 아니므로 통과시킨다.
     2. **콘텐츠 타입 · 본문.** JSON 객체여야 한다. 이 검사만으로도 위의
@@ -215,6 +216,9 @@ def create_app(cfg: AppConfig) -> Flask:
 
     @app.post("/api/export")
     def api_export():
+        rejection = _reject_bad_local_request(request)
+        if rejection is not None:
+            return rejection
         payload = request.get_json(silent=True) or {}
         game = payload.get("game", "")
         content = payload.get("content", "")
