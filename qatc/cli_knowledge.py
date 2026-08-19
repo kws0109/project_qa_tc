@@ -475,11 +475,17 @@ def cmd_tc_add(args: argparse.Namespace, cfg: AppConfig) -> int:
                     _p(f"오류: {field} 가 비어 있습니다 (TC {i + 1}번). "
                        f"middle 은 화면·메뉴 이름, sub 는 케이스 이름입니다.")
                     return 1
+            # 중분류·소분류는 여기서 한 번 .strip() 한다 — Bug B 의 중복
+            # 판정(`replace_generated` 의 `seen`)과 번호 물려주기(`inherited`)가
+            # 모두 이 저장값을 그대로 키로 쓴다. 여기서 안 자르면 뒤·앞 공백만
+            # 다른 두 소분류가 서로 다른 키가 되어 가드를 뚫고, 표에는 눈으로
+            # 구별할 수 없는 두 행이 남는다. NFC 정규화·전각 공백 등은 다루지
+            # 않는다 — 이 자리는 공백 하나만 최소로 막는다.
             cases.append(TestCase(
                 id="",
                 category_major=args.content,
-                category_minor=str(item["middle"]),
-                category_sub=str(item["sub"]),
+                category_minor=str(item["middle"]).strip(),
+                category_sub=str(item["sub"]).strip(),
                 family=args.family,
                 precondition=str(item.get("precondition", "")),
                 steps=[str(x) for x in item["steps"]],

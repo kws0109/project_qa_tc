@@ -179,7 +179,12 @@ class KnowledgeStore:
             )
 
     def _conflicting_owner(self, code: str, name: str) -> str | None:
-        """`code` 를 이미 `name` 아닌 다른 컨텐츠가 쓰고 있으면 그 이름을 돌려준다."""
+        """`code` 를 이미 `name` 아닌 다른 컨텐츠가 쓰고 있으면 그 이름(들)을 돌려준다.
+
+        `codes_in_use()` 의 값은 한 코드를 여러 컨텐츠가 쓰면 이름을 콤마로
+        이어붙인 문자열이다 — 단일 컨텐츠 이름이라 가정하고 등호로 비교하면
+        (예: `owner == name`) 중복 코드가 있는 DB 에서 조용히 틀린 답을 얻는다.
+        """
         owner = self.codes_in_use().get(code)
         return owner if owner and owner != name else None
 
@@ -561,8 +566,15 @@ class KnowledgeStore:
         kept = 0
         deleted = 0
         try:
+            # `ORDER BY id` — 재설계 이전 행은 소분류가 없어 한 계열의 모든
+            # 행이 (옛_중분류, "") 하나로 뭉친다. 그런 쌍이 여럿이면 정렬
+            # 없이는 어느 id 가 새 배치로 넘어갈지 sqlite 의 반환 순서에
+            # 달리게 되어, 인덱스 재구축 등으로 순서가 바뀌면 같은 입력인데도
+            # 실행마다 물려받는 번호가 달라진다. `testcases()` 가 같은 이유로
+            # `ORDER BY rowid` 를 쓰는 것과 같은 문제다.
             rows = db.execute(
-                "SELECT id, generated_hash, row FROM testcases WHERE content = ? AND family = ?",
+                "SELECT id, generated_hash, row FROM testcases WHERE content = ? AND family = ?"
+                " ORDER BY id",
                 (content, family),
             ).fetchall()
 
@@ -611,6 +623,11 @@ class KnowledgeStore:
         if not code:
             raise KeyError(
                 f"'{content}'에 컨텐츠 코드가 없어 TC ID를 만들 수 없습니다. "
+                # 이 거절은 (replace_generated 호출자라면) 삭제보다 먼저
+                # 일어난다 — 그런데 문구가 그 사실을 말하지 않으면, 예전에
+                # 이 컨텐츠에서 TC 를 잃어본 사용자는 이번에도 지워졌는지
+                # 아닌지를 문구만으로는 알 수 없다.
+                f"기존 TC 는 지우지 않았습니다. "
                 f"'qatc slot init {content} --code <영문대문자약어>' 로 먼저 정하세요."
             )
         return code
