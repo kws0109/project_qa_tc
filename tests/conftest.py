@@ -128,9 +128,12 @@ def make_tc():
             id=id,
             category_major="파티 편성",
             category_minor="정상 경로",
-            # 지금은 category_minor 와 같은 값이다 — 실제 DB 라면 항상 그렇다.
-            # family 를 따로 받는 이유는 "다른 계열의 TC" 를 흉내 내려는
-            # 테스트가 category_minor 만 바꾸고 family 는 잊는 사고를 막기 위함.
+            # 기본값이 우연히 같아 보일 뿐, 실제 DB 라면 이 둘은 거의 항상
+            # 다르다 — category_minor 는 화면·메뉴 계층(예: '로그인 창'),
+            # family 는 게이트·근거 철회가 보는 TC 계열(예: '요소 표시 확인')
+            # 이다. family 를 따로 받는 이유는 "다른 계열의 TC" 를 흉내
+            # 내려는 테스트가 category_minor 만 바꾸고 family 는 잊는 사고를
+            # 막기 위함 — 필요하면 호출부에서 둘을 다르게 지정한다.
             family=family,
             title=title,
             precondition="파티 편성 화면",

@@ -488,11 +488,10 @@ button, textarea, input {
 #export-status.ok { color: var(--ok); }
 #export-status.error { color: var(--danger); }
 
-.tc-title { font-size: 1.05rem; margin: 4px 0 8px; }
-
 /* `renderReview` 가 `중분류 › 소분류` 를 span 없이 문자열 한 줄로 넣는다 —
    구분자 자체가 계층 경계를 이미 보여줘서 두 색으로 나눌 필요가 없었다.
-   `.tc-title` 와 같은 크기·여백만 그대로 물려받는다. */
+   예전엔 `.tc-title` 이 같은 자리를 썼는데, 제목 칸이 표에서 빠지면서
+   (표 재설계) 이 규칙 하나만 남았다. */
 .tc-path { font-size: 1.05rem; margin: 4px 0 8px; color: var(--text); }
 
 .tc-meta { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
