@@ -65,6 +65,22 @@ def test_both_clues_must_match_when_both_are_given():
     assert got.handle == 2
 
 
+def test_the_shipped_starrail_profile_matches_the_real_window_title():
+    """실측(2026-08-19 라이브 확인): 게임 창 제목은 `붕괴:\\xa0스타레일` 이다.
+
+    콜론 뒤가 일반 공백이 아니라 U+00A0(줄바꿈 없는 공백)이라, 눈으로는
+    프로파일과 똑같아 보여도 매칭이 조용히 실패한다 — 파일을 아무리
+    들여다봐도 안 보이는 종류의 불일치라서 실측 제목 그대로 고정한다.
+    """
+    from pathlib import Path
+
+    from qatc.profiles import load_profiles
+
+    prof = load_profiles(Path(__file__).resolve().parents[1] / "profiles")["starrail"]
+    got = select_window([_w(title="붕괴:\xa0스타레일")], prof)
+    assert got.title == "붕괴:\xa0스타레일"
+
+
 def test_a_malformed_title_regex_is_a_korean_capture_error_not_a_traceback():
     """`window_title_regex` 는 사용자가 YAML 을 손으로 고친 값이다 - 문법이
     깨지면 `re.search` 가 `re.error` 를 던진다. 그것이 `CaptureError` 로

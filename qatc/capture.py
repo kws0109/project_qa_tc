@@ -261,10 +261,29 @@ def _ensure_dpi_aware() -> None:
 
 
 def _process_name(hwnd: int) -> str:
-    """창을 소유한 프로세스의 실행 파일 이름. 못 얻으면 빈 문자열."""
+    """창을 소유한 프로세스의 실행 파일 이름. 못 얻으면 빈 문자열.
+
+    안티치트가 보호하는 게임 프로세스(호요버스 계열 등)는 VM_READ 가 거부돼
+    psapi 경로로는 핸들조차 못 얻는다 — 실측(2026-08-19): 스타레일이 떠
+    있는데도 빈 문자열이 돌아와 process 검사가 영구 탈락했다. 보호
+    프로세스도 허용하는 QUERY_LIMITED_INFORMATION 으로 먼저 묻고, 그마저
+    안 되는 창만 예전 경로로 내려간다.
+    """
     pid = wintypes.DWORD()
     ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-    handle = ctypes.windll.kernel32.OpenProcess(0x0400 | 0x0010, False, pid)
+    kernel32 = ctypes.windll.kernel32
+
+    handle = kernel32.OpenProcess(0x1000, False, pid)   # QUERY_LIMITED_INFORMATION
+    if handle:
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(1024)
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                return buf.value.rsplit("\\", 1)[-1]
+        finally:
+            kernel32.CloseHandle(handle)
+
+    handle = kernel32.OpenProcess(0x0400 | 0x0010, False, pid)
     if not handle:
         return ""
     try:
